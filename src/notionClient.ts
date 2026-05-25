@@ -1,6 +1,6 @@
 import { Client, isFullBlock } from '@notionhq/client';
 import { BlockObjectResponse, RichTextItemResponse } from '@notionhq/client/build/src/api-endpoints';
-import { getDb } from './db';
+import pool from './db';
 
 let notionClient: Client | null = null;
 
@@ -71,7 +71,7 @@ function richTextToString(richText: RichTextItemResponse[]): string {
 
 async function fetchBlockChildren(blockId: string, depth: number): Promise<NotionBlock[]> {
   if (depth <= 0) return [];
-  
+
   const notion = getNotionClient();
   const blocks: BlockObjectResponse[] = [];
   let cursor: string | undefined;
@@ -82,31 +82,31 @@ async function fetchBlockChildren(blockId: string, depth: number): Promise<Notio
       start_cursor: cursor,
       page_size: 100,
     });
-    
+
     for (const block of response.results) {
       if (isFullBlock(block)) {
         blocks.push(block);
       }
     }
-    
+
     cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
   } while (cursor);
 
   const result: NotionBlock[] = [];
-  
+
   for (const block of blocks) {
     const converted = await convertBlock(block, depth);
     if (converted) {
       result.push(converted);
     }
   }
-  
+
   return result;
 }
 
 async function convertBlock(block: BlockObjectResponse, depth: number): Promise<NotionBlock | null> {
   const base: NotionBlock = { id: block.id, type: block.type };
-  
+
   switch (block.type) {
     case 'paragraph': {
       const rich = block.paragraph.rich_text;
@@ -252,7 +252,7 @@ async function convertBlock(block: BlockObjectResponse, depth: number): Promise<
     default:
       return null;
   }
-  
+
   return base;
 }
 
@@ -261,35 +261,37 @@ export async function fetchPageBlocks(pageId: string): Promise<NotionBlock[]> {
 }
 
 export async function fetchPageBlocksCached(pageId: string): Promise<NotionBlock[]> {
-  const db = getDb();
   const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour
-  
-  const cached = db.prepare('SELECT content, last_fetched FROM notion_cache WHERE page_id = ?').get(pageId) as
-    | { content: string; last_fetched: string }
-    | undefined;
-  
-  if (cached) {
+
+  const cacheResult = await pool.query(
+    'SELECT content, last_fetched FROM notion_cache WHERE page_id = $1',
+    [pageId]
+  );
+
+  if (cacheResult.rows.length > 0) {
+    const cached = cacheResult.rows[0];
     const fetchedAt = new Date(cached.last_fetched).getTime();
     const age = Date.now() - fetchedAt;
     if (age < CACHE_DURATION_MS) {
       return JSON.parse(cached.content) as NotionBlock[];
     }
   }
-  
+
   const blocks = await fetchPageBlocks(pageId);
   const content = JSON.stringify(blocks);
-  
-  db.prepare(`
-    INSERT OR REPLACE INTO notion_cache (page_id, content, last_fetched)
-    VALUES (?, ?, datetime('now'))
-  `).run(pageId, content);
-  
+
+  await pool.query(
+    `INSERT INTO notion_cache (page_id, content, last_fetched)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (page_id) DO UPDATE SET content = $2, last_fetched = NOW()`,
+    [pageId, content]
+  );
+
   return blocks;
 }
 
 export async function invalidateCache(pageId: string): Promise<void> {
-  const db = getDb();
-  db.prepare('DELETE FROM notion_cache WHERE page_id = ?').run(pageId);
+  await pool.query('DELETE FROM notion_cache WHERE page_id = $1', [pageId]);
 }
 
 export interface EarningsCallLink {
@@ -300,10 +302,10 @@ export interface EarningsCallLink {
 
 export async function extractEarningsCallsFromPage(pageId: string): Promise<EarningsCallLink[]> {
   const blocks = await fetchPageBlocks(pageId);
-  
+
   let inSeguimiento = false;
   const earnings: EarningsCallLink[] = [];
-  
+
   for (const block of blocks) {
     if (block.type === 'heading_1' || block.type === 'heading_2' || block.type === 'heading_3') {
       const text = block.content?.toLowerCase() ?? '';
@@ -313,7 +315,7 @@ export async function extractEarningsCallsFromPage(pageId: string): Promise<Earn
         inSeguimiento = false;
       }
     }
-    
+
     if (block.type === 'toggle' && block.content?.toLowerCase().includes('seguimiento')) {
       inSeguimiento = true;
       if (block.children) {
@@ -330,7 +332,7 @@ export async function extractEarningsCallsFromPage(pageId: string): Promise<Earn
       inSeguimiento = false;
       continue;
     }
-    
+
     if (inSeguimiento && block.type === 'child_page' && block.title && block.pageUrl) {
       earnings.push({
         pageId: block.id,
@@ -339,14 +341,14 @@ export async function extractEarningsCallsFromPage(pageId: string): Promise<Earn
       });
     }
   }
-  
+
   return earnings;
 }
 
 export async function getPageTitle(pageId: string): Promise<string> {
   const notion = getNotionClient();
   const page = await notion.pages.retrieve({ page_id: pageId });
-  
+
   if ('properties' in page) {
     const titleProp = Object.values(page.properties).find(
       (p) => p.type === 'title'
@@ -355,7 +357,7 @@ export async function getPageTitle(pageId: string): Promise<string> {
       return titleProp.title.map((t: any) => t.plain_text).join('');
     }
   }
-  
+
   return 'Untitled';
 }
 

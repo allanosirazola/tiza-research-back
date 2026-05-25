@@ -1,30 +1,26 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { getDb } from '../db';
+import pool from '../db';
 import {
   extractEarningsCallsFromPage,
   fetchPageBlocksCached,
-  getPageTitle,
-  extractPageIdFromUrl,
   invalidateCache,
 } from '../notionClient';
 
 const router = Router();
 
-router.get('/', (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
-    const companies = db.prepare('SELECT * FROM companies ORDER BY name ASC').all();
-    res.json(companies);
+    const result = await pool.query('SELECT * FROM companies ORDER BY name ASC');
+    res.json(result.rows);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch companies' });
   }
 });
 
-router.post('/', (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
     const {
       name,
       ticker,
@@ -33,6 +29,8 @@ router.post('/', (req: Request, res: Response) => {
       currency,
       current_price,
       target_price,
+      entry_price,
+      entry_date,
       pe_ratio,
       ev_ebitda,
       conviction,
@@ -42,6 +40,8 @@ router.post('/', (req: Request, res: Response) => {
       notion_page_url,
       logo_url,
       notes,
+      nav_url,
+      alert_threshold,
     } = req.body;
 
     if (!name) {
@@ -49,90 +49,95 @@ router.post('/', (req: Request, res: Response) => {
     }
 
     const id = uuidv4();
-    db.prepare(`
-      INSERT INTO companies (
+    await pool.query(
+      `INSERT INTO companies (
         id, name, ticker, sector, market_cap, currency, current_price, target_price,
-        pe_ratio, ev_ebitda, conviction, position_size, status, notion_page_id,
-        notion_page_url, logo_url, notes
+        entry_price, entry_date, pe_ratio, ev_ebitda, conviction, position_size, status,
+        notion_page_id, notion_page_url, logo_url, notes, nav_url, alert_threshold
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-      )
-    `).run(
-      id, name, ticker ?? null, sector ?? null, market_cap ?? null,
-      currency ?? 'EUR', current_price ?? null, target_price ?? null,
-      pe_ratio ?? null, ev_ebitda ?? null, conviction ?? null,
-      position_size ?? null, status ?? 'watchlist', notion_page_id ?? null,
-      notion_page_url ?? null, logo_url ?? null, notes ?? null
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+      )`,
+      [
+        id, name, ticker ?? null, sector ?? null, market_cap ?? null,
+        currency ?? 'EUR', current_price ?? null, target_price ?? null,
+        entry_price ?? null, entry_date ?? null, pe_ratio ?? null, ev_ebitda ?? null,
+        conviction ?? null, position_size ?? null, status ?? 'watchlist',
+        notion_page_id ?? null, notion_page_url ?? null, logo_url ?? null,
+        notes ?? null, nav_url ?? null, alert_threshold ?? 20,
+      ]
     );
 
-    const company = db.prepare('SELECT * FROM companies WHERE id = ?').get(id);
-    return res.status(201).json(company);
+    const company = await pool.query('SELECT * FROM companies WHERE id = $1', [id]);
+    return res.status(201).json(company.rows[0]);
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Failed to create company' });
   }
 });
 
-router.get('/:id', (req: Request, res: Response) => {
+router.get('/:id', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
-    const company = db.prepare('SELECT * FROM companies WHERE id = ?').get(req.params.id);
-    if (!company) {
+    const result = await pool.query('SELECT * FROM companies WHERE id = $1', [req.params.id]);
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Company not found' });
     }
-    return res.json(company);
+    return res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Failed to fetch company' });
   }
 });
 
-router.put('/:id', (req: Request, res: Response) => {
+router.put('/:id', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
-    const existing = db.prepare('SELECT * FROM companies WHERE id = ?').get(req.params.id);
-    if (!existing) {
+    const existingResult = await pool.query('SELECT * FROM companies WHERE id = $1', [req.params.id]);
+    if (existingResult.rows.length === 0) {
       return res.status(404).json({ error: 'Company not found' });
     }
 
     const fields = [
       'name', 'ticker', 'sector', 'market_cap', 'currency', 'current_price',
-      'target_price', 'pe_ratio', 'ev_ebitda', 'conviction', 'position_size',
-      'status', 'notion_page_id', 'notion_page_url', 'logo_url', 'notes'
+      'target_price', 'entry_price', 'entry_date', 'pe_ratio', 'ev_ebitda',
+      'conviction', 'position_size', 'status', 'notion_page_id', 'notion_page_url',
+      'logo_url', 'notes', 'nav_url', 'alert_threshold',
     ];
 
     const updates: string[] = [];
     const values: unknown[] = [];
+    let paramIdx = 1;
 
     for (const field of fields) {
       if (req.body[field] !== undefined) {
-        updates.push(`${field} = ?`);
+        updates.push(`${field} = $${paramIdx}`);
         values.push(req.body[field]);
+        paramIdx++;
       }
     }
 
     if (updates.length === 0) {
-      return res.json(existing);
+      return res.json(existingResult.rows[0]);
     }
 
-    updates.push(`updated_at = datetime('now')`);
+    updates.push(`updated_at = NOW()`);
     values.push(req.params.id);
 
-    db.prepare(`UPDATE companies SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    await pool.query(
+      `UPDATE companies SET ${updates.join(', ')} WHERE id = $${paramIdx}`,
+      values
+    );
 
-    const updated = db.prepare('SELECT * FROM companies WHERE id = ?').get(req.params.id);
-    return res.json(updated);
+    const updated = await pool.query('SELECT * FROM companies WHERE id = $1', [req.params.id]);
+    return res.json(updated.rows[0]);
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Failed to update company' });
   }
 });
 
-router.delete('/:id', (req: Request, res: Response) => {
+router.delete('/:id', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
-    const result = db.prepare('DELETE FROM companies WHERE id = ?').run(req.params.id);
-    if (result.changes === 0) {
+    const result = await pool.query('DELETE FROM companies WHERE id = $1 RETURNING id', [req.params.id]);
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Company not found' });
     }
     return res.json({ success: true });
@@ -144,11 +149,11 @@ router.delete('/:id', (req: Request, res: Response) => {
 
 router.post('/:id/sync-notion', async (req: Request, res: Response) => {
   try {
-    const db = getDb();
-    const company = db.prepare('SELECT * FROM companies WHERE id = ?').get(req.params.id) as any;
-    if (!company) {
+    const companyResult = await pool.query('SELECT * FROM companies WHERE id = $1', [req.params.id]);
+    if (companyResult.rows.length === 0) {
       return res.status(404).json({ error: 'Company not found' });
     }
+    const company = companyResult.rows[0];
 
     if (!company.notion_page_id) {
       return res.status(400).json({ error: 'No Notion page linked to this company' });
@@ -160,19 +165,21 @@ router.post('/:id/sync-notion', async (req: Request, res: Response) => {
     const earningsLinks = await extractEarningsCallsFromPage(company.notion_page_id);
 
     for (const link of earningsLinks) {
-      const existingEarnings = db.prepare(
-        'SELECT id FROM earnings_calls WHERE notion_page_id = ?'
-      ).get(link.pageId);
+      const existingEarnings = await pool.query(
+        'SELECT id FROM earnings_calls WHERE notion_page_id = $1',
+        [link.pageId]
+      );
 
-      if (!existingEarnings) {
-        db.prepare(`
-          INSERT INTO earnings_calls (id, company_id, period, notion_page_id, notion_page_url)
-          VALUES (?, ?, ?, ?, ?)
-        `).run(uuidv4(), company.id, link.title, link.pageId, link.pageUrl);
+      if (existingEarnings.rows.length === 0) {
+        await pool.query(
+          `INSERT INTO earnings_calls (id, company_id, period, notion_page_id, notion_page_url)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [uuidv4(), company.id, link.title, link.pageId, link.pageUrl]
+        );
       }
     }
 
-    db.prepare(`UPDATE companies SET updated_at = datetime('now') WHERE id = ?`).run(company.id);
+    await pool.query('UPDATE companies SET updated_at = NOW() WHERE id = $1', [company.id]);
 
     return res.json({
       success: true,

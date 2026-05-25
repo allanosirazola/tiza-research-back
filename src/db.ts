@@ -1,94 +1,132 @@
-import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
+import { Pool } from 'pg';
 
-// DB_PATH env var lets Railway Volume override the path (set to /data/tiza.db in Railway)
-const DB_DIR = process.env.DB_PATH
-  ? path.dirname(process.env.DB_PATH)
-  : path.join(__dirname, '..', 'data');
-const DB_PATH = process.env.DB_PATH || path.join(DB_DIR, 'tiza.db');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes('railway') || process.env.NODE_ENV === 'production'
+    ? { rejectUnauthorized: false }
+    : false,
+});
 
-let db: Database.Database;
-
-export function initDb(): void {
-  if (!fs.existsSync(DB_DIR)) {
-    fs.mkdirSync(DB_DIR, { recursive: true });
-  }
-
-  db = new Database(DB_PATH);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-
-  db.exec(`
+export async function initDb(): Promise<void> {
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS companies (
-      id TEXT PRIMARY KEY,
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       name TEXT NOT NULL,
       ticker TEXT,
       sector TEXT,
-      market_cap REAL,
+      market_cap NUMERIC,
       currency TEXT DEFAULT 'EUR',
-      current_price REAL,
-      target_price REAL,
-      pe_ratio REAL,
-      ev_ebitda REAL,
+      current_price NUMERIC,
+      target_price NUMERIC,
+      entry_price NUMERIC,
+      entry_date DATE,
+      pe_ratio NUMERIC,
+      ev_ebitda NUMERIC,
       conviction INTEGER CHECK(conviction BETWEEN 1 AND 5),
-      position_size REAL,
+      position_size NUMERIC,
       status TEXT DEFAULT 'watchlist' CHECK(status IN ('active', 'watchlist', 'closed', 'sold')),
       notion_page_id TEXT,
       notion_page_url TEXT,
       logo_url TEXT,
       notes TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
+      last_price_update TIMESTAMPTZ,
+      price_change_1d NUMERIC,
+      week_52_high NUMERIC,
+      week_52_low NUMERIC,
+      nav_url TEXT,
+      last_nav NUMERIC,
+      last_nav_date DATE,
+      nav_discount NUMERIC,
+      alert_threshold NUMERIC DEFAULT 20,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS earnings_calls (
-      id TEXT PRIMARY KEY,
-      company_id TEXT NOT NULL,
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
       period TEXT NOT NULL,
-      call_date TEXT,
+      call_date DATE,
       notion_page_id TEXT,
       notion_page_url TEXT,
-      revenue_growth REAL,
-      eps REAL,
+      revenue_growth NUMERIC,
+      eps NUMERIC,
       guidance TEXT,
       notes TEXT,
       conviction_change INTEGER,
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS valuation_cases (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      case_type TEXT NOT NULL CHECK(case_type IN ('bull', 'base', 'bear')),
+      target_price NUMERIC,
+      entry_price NUMERIC,
+      cagr NUMERIC,
+      timeframe INTEGER DEFAULT 5,
+      weight NUMERIC DEFAULT 33.33,
+      notes TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(company_id, case_type)
     );
 
     CREATE TABLE IF NOT EXISTS notion_cache (
       page_id TEXT PRIMARY KEY,
       content TEXT NOT NULL,
-      last_fetched TEXT DEFAULT (datetime('now'))
+      last_fetched TIMESTAMPTZ DEFAULT NOW()
     );
 
-    CREATE TABLE IF NOT EXISTS valuation_cases (
-      id TEXT PRIMARY KEY,
-      company_id TEXT NOT NULL,
-      case_type TEXT NOT NULL CHECK(case_type IN ('bull', 'base', 'bear')),
-      target_price REAL,
-      entry_price REAL,
-      cagr REAL,
-      timeframe INTEGER DEFAULT 5,
-      weight REAL DEFAULT 33.33,
-      notes TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
-      UNIQUE(company_id, case_type)
+    CREATE TABLE IF NOT EXISTS price_alerts (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      alert_type TEXT NOT NULL CHECK(alert_type IN ('target_pct', 'price_above', 'price_below')),
+      threshold NUMERIC NOT NULL,
+      label TEXT,
+      is_active BOOLEAN DEFAULT TRUE,
+      triggered_at TIMESTAMPTZ,
+      last_notified_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS weekly_summaries (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      week_start DATE NOT NULL UNIQUE,
+      content JSONB NOT NULL,
+      email_sent BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS user_scripts (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name TEXT NOT NULL,
+      description TEXT,
+      code TEXT NOT NULL DEFAULT '',
+      last_run TIMESTAMPTZ,
+      last_output TEXT,
+      last_error TEXT,
+      run_count INTEGER DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS price_snapshots (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      price NUMERIC NOT NULL,
+      market_cap NUMERIC,
+      source TEXT DEFAULT 'yahoo',
+      snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(company_id, snapshot_date)
     );
   `);
-
-  console.log('Database initialized at', DB_PATH);
+  console.log('PostgreSQL database initialized');
 }
 
-export function getDb(): Database.Database {
-  if (!db) {
-    initDb();
-  }
-  return db;
+export function getDb() {
+  return pool;
 }
 
-export default { initDb, getDb };
+export default pool;
