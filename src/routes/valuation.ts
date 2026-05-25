@@ -1,11 +1,11 @@
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db';
 
 const router = Router({ mergeParams: true });
 
 // GET /api/companies/:companyId/valuation
-router.get('/', (req, res) => {
+router.get('/', (req: Request<{ companyId: string }>, res: Response) => {
   try {
     const db = getDb();
     const company = db.prepare('SELECT id FROM companies WHERE id = ?').get(req.params.companyId);
@@ -19,7 +19,7 @@ router.get('/', (req, res) => {
 });
 
 // PUT /api/companies/:companyId/valuation/:caseType
-router.put('/:caseType', (req, res) => {
+router.put('/:caseType', (req: Request<{ companyId: string; caseType: string }>, res: Response) => {
   try {
     const db = getDb();
     const { caseType, companyId } = req.params;
