@@ -152,6 +152,23 @@ export async function initDb(): Promise<void> {
     );
 
     CREATE INDEX IF NOT EXISTS idx_transcripts_company_id ON transcripts(company_id);
+
+    CREATE TABLE IF NOT EXISTS portfolio_performance_history (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      period TEXT NOT NULL,
+      period_type TEXT NOT NULL DEFAULT 'annual',
+      period_start DATE,
+      period_end DATE,
+      portfolio_return NUMERIC,
+      sp500_return NUMERIC,
+      msci_world_return NUMERIC,
+      portfolio_value_end NUMERIC,
+      money_invested NUMERIC,
+      win_lose_usd NUMERIC,
+      notes TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(period, period_type)
+    );
   `);
   console.log('PostgreSQL database initialized');
 }

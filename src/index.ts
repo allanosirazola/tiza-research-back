@@ -16,6 +16,7 @@ import eventsRouter from './routes/events';
 import eventsGlobalRouter from './routes/eventsGlobal';
 import transcriptsRouter from './routes/transcripts';
 import portfolioRouter from './routes/portfolio';
+import { seedPortfolioHistory } from './services/portfolioSeed';
 import { refreshAllCompanyPrices } from './services/marketData';
 import { checkAndFireAlerts, generateWeeklySummary } from './services/alerts';
 
@@ -92,6 +93,7 @@ cron.schedule('0 8 * * 6', async () => {
 
 async function start(): Promise<void> {
   await initDb();
+  await seedPortfolioHistory();
 
   app.listen(PORT, () => {
     console.log(`Tiza Research backend running on http://localhost:${PORT}`);
