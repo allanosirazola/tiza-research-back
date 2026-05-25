@@ -15,6 +15,7 @@ import summariesRouter from './routes/summaries';
 import eventsRouter from './routes/events';
 import eventsGlobalRouter from './routes/eventsGlobal';
 import transcriptsRouter from './routes/transcripts';
+import portfolioRouter from './routes/portfolio';
 import { refreshAllCompanyPrices } from './services/marketData';
 import { checkAndFireAlerts, generateWeeklySummary } from './services/alerts';
 
@@ -49,6 +50,7 @@ app.use('/api/summaries', summariesRouter);
 app.use('/api/companies/:companyId/events', eventsRouter);
 app.use('/api/events', eventsGlobalRouter);
 app.use('/api/companies/:companyId/transcripts', transcriptsRouter);
+app.use('/api/portfolio', portfolioRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
