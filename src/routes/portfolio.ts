@@ -1,6 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { getPortfolioSummary, getPeriodReturns } from '../services/portfolioPerformance';
+import { syncFromSheets } from '../services/sheetsSync';
 import pool from '../db';
+
+const DEFAULT_SHEETS_URL = 'https://docs.google.com/spreadsheets/d/11vNXKvruW8N8zSXtkJlUkr7772fUPN-6OcANfC0qNx4';
 
 const router = Router();
 
@@ -84,6 +87,40 @@ router.post('/history', async (req: Request, res: Response) => {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Failed to upsert history record' });
+  }
+});
+
+// POST /api/portfolio/seed-companies
+// Seeds companies from the configured Google Sheet (same as sync-sheets but uses default URL)
+router.post('/seed-companies', async (_req: Request, res: Response) => {
+  try {
+    const result = await syncFromSheets(DEFAULT_SHEETS_URL);
+    return res.json({
+      seeded: result.inserted,
+      skipped: result.skipped,
+      updated: result.updated,
+      errors: result.errors,
+    });
+  } catch (err: any) {
+    console.error('[seed-companies]', err);
+    return res.status(500).json({ error: err.message ?? 'Failed to seed companies from Google Sheets' });
+  }
+});
+
+// POST /api/portfolio/sync-sheets
+// Body: { url?: string }  — uses DEFAULT_SHEETS_URL when url is omitted
+router.post('/sync-sheets', async (req: Request, res: Response) => {
+  try {
+    const url: string = req.body?.url ?? DEFAULT_SHEETS_URL;
+    const result = await syncFromSheets(url);
+    return res.json({
+      updated: result.updated + result.inserted,
+      errors: result.errors,
+      detail: result,
+    });
+  } catch (err: any) {
+    console.error('[sync-sheets]', err);
+    return res.status(500).json({ error: err.message ?? 'Failed to sync from Google Sheets' });
   }
 });
 
