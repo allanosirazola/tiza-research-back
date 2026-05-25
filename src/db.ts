@@ -60,6 +60,22 @@ export function initDb(): void {
       content TEXT NOT NULL,
       last_fetched TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS valuation_cases (
+      id TEXT PRIMARY KEY,
+      company_id TEXT NOT NULL,
+      case_type TEXT NOT NULL CHECK(case_type IN ('bull', 'base', 'bear')),
+      target_price REAL,
+      entry_price REAL,
+      cagr REAL,
+      timeframe INTEGER DEFAULT 5,
+      weight REAL DEFAULT 33.33,
+      notes TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+      UNIQUE(company_id, case_type)
+    );
   `);
 
   console.log('Database initialized at', DB_PATH);

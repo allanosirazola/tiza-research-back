@@ -5,6 +5,7 @@ import { initDb } from './db';
 import companiesRouter from './routes/companies';
 import notionRouter from './routes/notion';
 import earningsRouter from './routes/earnings';
+import valuationRouter from './routes/valuation';
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001;
@@ -15,6 +16,7 @@ app.use(express.json());
 app.use('/api/companies', companiesRouter);
 app.use('/api/notion', notionRouter);
 app.use('/api/companies/:companyId/earnings', earningsRouter);
+app.use('/api/companies/:companyId/valuation', valuationRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
