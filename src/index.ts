@@ -12,6 +12,9 @@ import marketRouter from './routes/market';
 import alertsRouter from './routes/alerts';
 import scriptsRouter from './routes/scripts';
 import summariesRouter from './routes/summaries';
+import eventsRouter from './routes/events';
+import eventsGlobalRouter from './routes/eventsGlobal';
+import transcriptsRouter from './routes/transcripts';
 import { refreshAllCompanyPrices } from './services/marketData';
 import { checkAndFireAlerts, generateWeeklySummary } from './services/alerts';
 
@@ -43,6 +46,9 @@ app.use('/api/market', marketRouter);
 app.use('/api/alerts', alertsRouter);
 app.use('/api/scripts', scriptsRouter);
 app.use('/api/summaries', summariesRouter);
+app.use('/api/companies/:companyId/events', eventsRouter);
+app.use('/api/events', eventsGlobalRouter);
+app.use('/api/companies/:companyId/transcripts', transcriptsRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -61,8 +67,8 @@ cron.schedule('0 * * * *', async () => {
   }
 });
 
-// Every Monday 8am: generate weekly summary
-cron.schedule('0 8 * * 1', async () => {
+// Every Saturday 8am: generate weekly summary
+cron.schedule('0 8 * * 6', async () => {
   console.log('[cron] Generating weekly summary...');
   try {
     const summary = await generateWeeklySummary();

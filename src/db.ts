@@ -121,6 +121,37 @@ export async function initDb(): Promise<void> {
       created_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(company_id, snapshot_date)
     );
+
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS ir_url TEXT;
+
+    CREATE TABLE IF NOT EXISTS company_events (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      event_type TEXT NOT NULL DEFAULT 'other' CHECK (event_type IN ('earnings','press_release','investor_day','agm','roadshow','dividend','conference','other')),
+      event_date DATE NOT NULL,
+      description TEXT,
+      url TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_company_events_company_id ON company_events(company_id);
+    CREATE INDEX IF NOT EXISTS idx_company_events_date ON company_events(event_date);
+
+    CREATE TABLE IF NOT EXISTS transcripts (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      transcript_type TEXT NOT NULL DEFAULT 'earnings_call' CHECK (transcript_type IN ('earnings_call','press_release','investor_day','annual_report','conference','other')),
+      content TEXT,
+      period TEXT,
+      transcript_date DATE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_transcripts_company_id ON transcripts(company_id);
   `);
   console.log('PostgreSQL database initialized');
 }
