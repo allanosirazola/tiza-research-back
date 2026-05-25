@@ -2,8 +2,11 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
-const DB_DIR = path.join(__dirname, '..', 'data');
-const DB_PATH = path.join(DB_DIR, 'tiza.db');
+// DB_PATH env var lets Railway Volume override the path (set to /data/tiza.db in Railway)
+const DB_DIR = process.env.DB_PATH
+  ? path.dirname(process.env.DB_PATH)
+  : path.join(__dirname, '..', 'data');
+const DB_PATH = process.env.DB_PATH || path.join(DB_DIR, 'tiza.db');
 
 let db: Database.Database;
 

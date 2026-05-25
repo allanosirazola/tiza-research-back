@@ -10,7 +10,21 @@ import valuationRouter from './routes/valuation';
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001;
 
-app.use(cors());
+// CORS: allow Vercel frontend + localhost dev
+const allowedOrigins = [
+  process.env.FRONTEND_URL,           // e.g. https://tiza-research.vercel.app
+  'http://localhost:5173',
+  'http://localhost:4173',
+].filter(Boolean) as string[];
+
+app.use(cors({
+  origin: (origin, cb) => {
+    // allow requests with no origin (curl, mobile apps, same-origin)
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin ${origin} not allowed`));
+  },
+  credentials: true,
+}));
 app.use(express.json());
 
 app.use('/api/companies', companiesRouter);

@@ -22,6 +22,8 @@
     "@types/uuid": "^9.0.8",
     "tsx": "^4.7.1",
     "typescript": "^5.4.3"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
-
