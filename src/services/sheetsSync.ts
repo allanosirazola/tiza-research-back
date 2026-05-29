@@ -92,7 +92,18 @@ function pick(row: Record<string, string>, normHeaders: string[], ...keys: strin
 
 function toNum(s: string): number | null {
   if (!s) return null;
-  const n = parseFloat(s.replace(/[%€$£,\s]/g, '').replace(',', '.').trim());
+  let cleaned = s.replace(/[%€$£\s]/g, '').trim();
+  if (!cleaned) return null;
+  const lastComma = cleaned.lastIndexOf(',');
+  const lastDot = cleaned.lastIndexOf('.');
+  if (lastComma !== -1 && lastComma > lastDot) {
+    // European format: "7,5" or "1.234,56" → "7.5" or "1234.56"
+    cleaned = cleaned.replace(/\./g, '').replace(',', '.');
+  } else {
+    // US/standard format: "7.5" or "1,234.56" → "7.5" or "1234.56"
+    cleaned = cleaned.replace(/,/g, '');
+  }
+  const n = parseFloat(cleaned);
   return isNaN(n) ? null : n;
 }
 

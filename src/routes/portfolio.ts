@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import axios from 'axios';
 import { getPortfolioSummary, getPeriodReturns } from '../services/portfolioPerformance';
 import { syncFromSheets } from '../services/sheetsSync';
 import pool from '../db';
@@ -122,6 +123,76 @@ router.post('/sync-sheets', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[sync-sheets]', err);
     return res.status(500).json({ error: err.message ?? 'Failed to sync from Google Sheets' });
+  }
+});
+
+// GET /api/portfolio/model-sheets?url=PUBHTML_URL
+// Returns sheet names and GIDs parsed from pubhtml
+router.get('/model-sheets', async (req: Request, res: Response) => {
+  try {
+    const url = req.query.url as string;
+    if (!url || !url.includes('/pubhtml')) {
+      return res.status(400).json({ error: 'Valid pubhtml URL required' });
+    }
+    const response = await axios.get<string>(url, {
+      timeout: 15000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' },
+    });
+    const html = response.data as string;
+    const sheets: { name: string; gid: string }[] = [];
+    // Parse: href="#gid=12345">Sheet Name</a>
+    const regex = /href="#gid=(\d+)"[^>]*>\s*([^<]+?)\s*<\/a>/g;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(html)) !== null) {
+      const name = m[2].trim();
+      if (name && !sheets.find(s => s.gid === m![1])) {
+        sheets.push({ gid: m[1], name });
+      }
+    }
+    const pubKeyMatch = url.match(/\/d\/e\/([a-zA-Z0-9_-]+)/);
+    const pubKey = pubKeyMatch ? pubKeyMatch[1] : '';
+    return res.json({ sheets, pubKey });
+  } catch (err: any) {
+    console.error('[model-sheets]', err);
+    return res.status(500).json({ error: 'Failed to parse sheet tabs', details: err.message });
+  }
+});
+
+// GET /api/portfolio/model-csv?pubkey=KEY&gid=GID
+// Returns parsed CSV rows for a specific sheet
+router.get('/model-csv', async (req: Request, res: Response) => {
+  try {
+    const { pubkey, gid } = req.query as { pubkey: string; gid: string };
+    if (!pubkey || !gid) return res.status(400).json({ error: 'pubkey and gid required' });
+    const csvUrl = `https://docs.google.com/spreadsheets/d/e/${pubkey}/pub?gid=${gid}&output=csv&single=true`;
+    const response = await axios.get<string>(csvUrl, {
+      timeout: 15000,
+      responseType: 'text',
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' },
+    });
+    const text = response.data as string;
+    const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    const parseRow = (line: string): string[] => {
+      const cells: string[] = [];
+      let inQ = false, cur = '';
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+          else inQ = !inQ;
+        } else if (ch === ',' && !inQ) { cells.push(cur.trim()); cur = ''; }
+        else { cur += ch; }
+      }
+      cells.push(cur.trim());
+      return cells;
+    };
+    const rows = lines.filter(l => l.trim()).map(parseRow);
+    const headers = rows[0] ?? [];
+    const dataRows = rows.slice(1).filter(r => r.some(c => c.trim()));
+    return res.json({ headers, rows: dataRows });
+  } catch (err: any) {
+    console.error('[model-csv]', err);
+    return res.status(500).json({ error: 'Failed to fetch CSV data', details: err.message });
   }
 });
 
