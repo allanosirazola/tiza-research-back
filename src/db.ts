@@ -124,6 +124,7 @@ export async function initDb(): Promise<void> {
 
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS ir_url TEXT;
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_url TEXT;
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS subsector TEXT;
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_kpis JSONB;
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS estado TEXT DEFAULT 'pendiente';
 

@@ -21,8 +21,8 @@ async function getYahooFinance(): Promise<any> {
   if (_yahooFinanceInstance) return _yahooFinanceInstance;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mod = await (Function('return import("yahoo-finance2")')() as Promise<any>);
-  const YFClass = mod.default ?? mod;
-  _yahooFinanceInstance = new YFClass();
+  // yahoo-finance2 default export IS the pre-configured instance with all modules registered
+  _yahooFinanceInstance = mod.default ?? mod;
   return _yahooFinanceInstance;
 }
 
@@ -130,6 +130,26 @@ export async function refreshAllCompanyPrices(): Promise<{ updated: number; erro
            market_cap = EXCLUDED.market_cap`,
         [company.id as string, quote.price, quote.marketCap ?? null]
       );
+
+      // Update fundamentals (pe_ratio, ev_ebitda, sector) only if currently null/empty
+      try {
+        const funds = await fetchFundamentals(company.ticker as string).catch(() => null);
+        if (funds) {
+          await pool.query(
+            `UPDATE companies SET
+              pe_ratio   = COALESCE(pe_ratio,   $1),
+              ev_ebitda  = COALESCE(ev_ebitda,  $2),
+              sector     = COALESCE(NULLIF(sector,''), $3)
+             WHERE id = $4`,
+            [
+              funds.trailingPE   ?? null,
+              funds.enterpriseToEbitda ?? null,
+              funds.sector       ?? null,
+              company.id as string,
+            ]
+          );
+        }
+      } catch (_) { /* non-fatal */ }
 
       updated++;
     } catch (err) {
