@@ -21,31 +21,53 @@ const ANNUAL_SEED = [
     portfolio_return: 48.86, sp500_return: 27.06, msci_world_return: 15.0,
     portfolio_value_end: 103022.76, money_invested: 40250, win_lose_usd: 24117.27 },
   { year: 2026, period: "2026 YTD", period_start: "2026-01-01", period_end: "2026-12-31",
-    portfolio_return: -1.98, sp500_return: 9.17, msci_world_return: null,
+    portfolio_return: 0.92, sp500_return: 10.49, msci_world_return: null,
     portfolio_value_end: 123556.47, money_invested: 23283, win_lose_usd: 345.02,
     notes: "Parcial (YTD)" },
 ];
 
 export async function seedPortfolioHistory(): Promise<void> {
   try {
-    const check = await pool.query('SELECT COUNT(*) FROM portfolio_performance_history');
-    if (parseInt(check.rows[0].count) > 0) {
-      return; // Already seeded
-    }
+    const currentYear = new Date().getFullYear();
     for (const row of ANNUAL_SEED) {
-      await pool.query(
-        `INSERT INTO portfolio_performance_history
-         (period, period_type, period_start, period_end, portfolio_return, sp500_return,
-          msci_world_return, portfolio_value_end, money_invested, win_lose_usd, notes)
-         VALUES ($1, 'annual', $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         ON CONFLICT (period, period_type) DO NOTHING`,
-        [
-          row.period, row.period_start, row.period_end,
-          row.portfolio_return, row.sp500_return, row.msci_world_return ?? null,
-          row.portfolio_value_end, row.money_invested, row.win_lose_usd,
-          (row as any).notes ?? null
-        ]
-      );
+      if (row.year === currentYear) {
+        // Always upsert the current year (YTD) record so it reflects latest values
+        await pool.query(
+          `INSERT INTO portfolio_performance_history
+           (period, period_type, period_start, period_end, portfolio_return, sp500_return,
+            msci_world_return, portfolio_value_end, money_invested, win_lose_usd, notes)
+           VALUES ($1, 'annual', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           ON CONFLICT (period, period_type) DO UPDATE SET
+             portfolio_return = EXCLUDED.portfolio_return,
+             sp500_return = EXCLUDED.sp500_return,
+             msci_world_return = EXCLUDED.msci_world_return,
+             portfolio_value_end = EXCLUDED.portfolio_value_end,
+             money_invested = EXCLUDED.money_invested,
+             win_lose_usd = EXCLUDED.win_lose_usd,
+             notes = EXCLUDED.notes`,
+          [
+            row.period, row.period_start, row.period_end,
+            row.portfolio_return, row.sp500_return, row.msci_world_return ?? null,
+            row.portfolio_value_end, row.money_invested, row.win_lose_usd,
+            (row as any).notes ?? null
+          ]
+        );
+      } else {
+        // For historical years, only insert if missing — never overwrite
+        await pool.query(
+          `INSERT INTO portfolio_performance_history
+           (period, period_type, period_start, period_end, portfolio_return, sp500_return,
+            msci_world_return, portfolio_value_end, money_invested, win_lose_usd, notes)
+           VALUES ($1, 'annual', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           ON CONFLICT (period, period_type) DO NOTHING`,
+          [
+            row.period, row.period_start, row.period_end,
+            row.portfolio_return, row.sp500_return, row.msci_world_return ?? null,
+            row.portfolio_value_end, row.money_invested, row.win_lose_usd,
+            (row as any).notes ?? null
+          ]
+        );
+      }
     }
     console.log('[seed] Portfolio history seeded:', ANNUAL_SEED.length, 'annual records');
   } catch (err) {

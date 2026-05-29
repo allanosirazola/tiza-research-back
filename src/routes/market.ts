@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import pool from '../db';
 import {
   fetchQuote,
+  fetchFundamentals,
   refreshAllCompanyPrices,
   calculateCAGR,
   calculateUpside,
@@ -18,6 +19,18 @@ router.get('/quote/:ticker', async (req: Request, res: Response) => {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Failed to fetch quote', details: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /api/market/fundamentals/:ticker
+router.get('/fundamentals/:ticker', async (req: Request, res: Response) => {
+  try {
+    const { ticker } = req.params;
+    const data = await fetchFundamentals(ticker.toUpperCase());
+    return res.json(data);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to fetch fundamentals', details: err instanceof Error ? err.message : String(err) });
   }
 });
 

@@ -58,6 +58,21 @@ export interface PortfolioPosition {
   ytd_return?: number;     // YTD return %
   ytd_contribution?: number; // YTD contribution in pp
   status: string;
+  is_cash?: boolean;
+}
+
+const CASH_NAME_PATTERNS = ['cash', 'liquidez', 'efectivo', 'cash and', 'treasury'];
+
+function isCashPosition(pos: PortfolioPosition): boolean {
+  const nameLower = pos.name?.toLowerCase() ?? '';
+  if (CASH_NAME_PATTERNS.some(p => nameLower.includes(p))) return true;
+  if (
+    pos.ticker == null &&
+    pos.pe_ratio == null &&
+    pos.ev_ebitda == null &&
+    pos.entry_price == null
+  ) return true;
+  return false;
 }
 
 // Get active portfolio positions with calculations
@@ -94,7 +109,7 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
       upside = ((targetPrice - currentPrice) / currentPrice) * 100;
     }
 
-    return {
+    const pos: PortfolioPosition = {
       id: r.id,
       name: r.name,
       ticker: r.ticker,
@@ -113,6 +128,8 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
       cagr,
       status: r.status,
     };
+    pos.is_cash = isCashPosition(pos);
+    return pos;
   });
 
   // Compute YTD returns using Jan 1 price snapshots
@@ -147,12 +164,12 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
   let weightedReturn: number | null = null;
 
   if (totalWeight > 0) {
-    const peItems = withWeight.filter(p => p.pe_ratio != null);
+    const peItems = withWeight.filter(p => p.pe_ratio != null && !p.is_cash);
     if (peItems.length) {
       const wt = peItems.reduce((s, p) => s + (p.position_size ?? 0), 0);
       weightedPe = peItems.reduce((s, p) => s + (p.pe_ratio! * (p.position_size ?? 0)), 0) / wt;
     }
-    const evItems = withWeight.filter(p => p.ev_ebitda != null);
+    const evItems = withWeight.filter(p => p.ev_ebitda != null && !p.is_cash);
     if (evItems.length) {
       const wt = evItems.reduce((s, p) => s + (p.position_size ?? 0), 0);
       weightedEvEbitda = evItems.reduce((s, p) => s + (p.ev_ebitda! * (p.position_size ?? 0)), 0) / wt;

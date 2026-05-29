@@ -141,6 +141,61 @@ export async function refreshAllCompanyPrices(): Promise<{ updated: number; erro
   return { updated, errors };
 }
 
+export interface FundamentalsData {
+  ticker: string;
+  name?: string;
+  price?: number;
+  currency?: string;
+  marketCap?: number;
+  trailingPE?: number;
+  forwardPE?: number;
+  priceToBook?: number;
+  enterpriseToEbitda?: number;   // EV/EBITDA
+  enterpriseToRevenue?: number;  // EV/Revenue
+  week52High?: number;
+  week52Low?: number;
+  sector?: string;
+  industry?: string;
+  shortName?: string;
+  longName?: string;
+}
+
+export async function fetchFundamentals(ticker: string): Promise<FundamentalsData> {
+  const yahooFinance = await getYahooFinance();
+
+  // Fetch both quote (for price) and quoteSummary (for fundamentals)
+  const [quote, summary] = await Promise.allSettled([
+    yahooFinance.quote(ticker),
+    yahooFinance.quoteSummary(ticker, {
+      modules: ['defaultKeyStatistics', 'summaryDetail', 'assetProfile'],
+    }),
+  ]);
+
+  const q = quote.status === 'fulfilled' ? quote.value : null;
+  const s = summary.status === 'fulfilled' ? summary.value : null;
+
+  const keyStats = s?.defaultKeyStatistics ?? {};
+  const summaryDetail = s?.summaryDetail ?? {};
+  const assetProfile = s?.assetProfile ?? {};
+
+  return {
+    ticker,
+    name: q?.longName ?? q?.shortName ?? undefined,
+    price: q?.regularMarketPrice ?? undefined,
+    currency: q?.currency ?? undefined,
+    marketCap: q?.marketCap ?? keyStats.enterpriseValue ?? undefined,
+    trailingPE: summaryDetail.trailingPE ?? q?.trailingPE ?? undefined,
+    forwardPE: summaryDetail.forwardPE ?? q?.forwardPE ?? undefined,
+    priceToBook: keyStats.priceToBook ?? undefined,
+    enterpriseToEbitda: keyStats.enterpriseToEbitda ?? undefined,
+    enterpriseToRevenue: keyStats.enterpriseToRevenue ?? undefined,
+    week52High: q?.fiftyTwoWeekHigh ?? summaryDetail.fiftyTwoWeekHigh ?? undefined,
+    week52Low: q?.fiftyTwoWeekLow ?? summaryDetail.fiftyTwoWeekLow ?? undefined,
+    sector: assetProfile.sector ?? undefined,
+    industry: assetProfile.industry ?? undefined,
+  };
+}
+
 export function calculateCAGR(entryPrice: number, currentPrice: number, entryDate: string): number {
   const years = (Date.now() - new Date(entryDate).getTime()) / (1000 * 60 * 60 * 24 * 365.25);
   if (years <= 0) return 0;
