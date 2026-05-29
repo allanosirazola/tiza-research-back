@@ -3,7 +3,7 @@ import { getPortfolioSummary, getPeriodReturns } from '../services/portfolioPerf
 import { syncFromSheets } from '../services/sheetsSync';
 import pool from '../db';
 
-const DEFAULT_SHEETS_URL = 'https://docs.google.com/spreadsheets/d/11vNXKvruW8N8zSXtkJlUkr7772fUPN-6OcANfC0qNx4';
+const DEFAULT_SHEETS_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vS5d6l6QsJmv_uJyzyKjt_h5ekWayV45ARu5wIrv-eBto2d_Gv0T3W02JSKfsdQa6SZSwKajb0ELA8l/pubhtml';
 
 const router = Router();
 
@@ -100,6 +100,7 @@ router.post('/seed-companies', async (_req: Request, res: Response) => {
       skipped: result.skipped,
       updated: result.updated,
       errors: result.errors,
+      detail: result,
     });
   } catch (err: any) {
     console.error('[seed-companies]', err);
