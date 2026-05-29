@@ -1,15 +1,8 @@
 import pool from '../db';
 
-// yahoo-finance2 default export is the CLASS; instance methods live on the prototype
-let _yahooFinanceInstance: any = null;
-async function getYahooFinance(): Promise<any> {
-  if (_yahooFinanceInstance) return _yahooFinanceInstance;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const mod = await (Function('return import("yahoo-finance2")')() as Promise<any>);
-  const YFClass = mod.default ?? mod;
-  _yahooFinanceInstance = typeof YFClass === 'function' ? new YFClass() : YFClass;
-  return _yahooFinanceInstance;
-}
+// Note: yahoo-finance2 v2.14.0 only ships quote+autoc; no historical module.
+// Benchmark history is fetched via the Yahoo Finance v8 chart API directly.
+const BENCH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
 
 export interface PeriodReturn {
   period: string;        // "Q1 2025" or "2025-01" for monthly
@@ -213,20 +206,30 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
   };
 }
 
-// Get benchmark historical data (monthly)
+// Get benchmark historical data (monthly) via Yahoo Finance v8 chart API
 async function getBenchmarkHistory(ticker: string, fromDate: string): Promise<Map<string, number>> {
-  // Returns map of "YYYY-MM-DD" -> price for month-end dates
   try {
-    const yahooFinance = await getYahooFinance();
-    const history = await yahooFinance.historical(ticker, {
-      period1: fromDate,
-      interval: '1mo',
+    const period1 = Math.floor(new Date(fromDate).getTime() / 1000);
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1mo&period1=${period1}&period2=9999999999&includePrePost=false`;
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': BENCH_UA,
+        'Accept': 'application/json',
+        'Origin': 'https://finance.yahoo.com',
+        'Referer': `https://finance.yahoo.com/quote/${ticker}/`,
+      },
     });
+    if (!res.ok) return new Map();
+    const json = await res.json() as any;
+    const result = json?.chart?.result?.[0];
+    const timestamps: number[] = result?.timestamp ?? [];
+    const closes: number[]     = result?.indicators?.adjclose?.[0]?.adjclose ?? result?.indicators?.quote?.[0]?.close ?? [];
     const map = new Map<string, number>();
-    for (const item of history) {
-      const date = new Date(item.date).toISOString().slice(0, 10);
-      map.set(date, item.adjClose ?? item.close);
-    }
+    timestamps.forEach((ts, i) => {
+      if (closes[i] != null) {
+        map.set(new Date(ts * 1000).toISOString().slice(0, 10), closes[i]);
+      }
+    });
     return map;
   } catch (err) {
     console.error(`Failed to fetch benchmark ${ticker}:`, err);
