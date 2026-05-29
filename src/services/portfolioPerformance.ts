@@ -34,6 +34,7 @@ export interface PortfolioSummary {
   weighted_ev_ebitda: number | null;
   weighted_upside: number | null;
   weighted_cagr: number | null;
+  ytd_portfolio?: number;          // sum of ytd_contributions (pp)
   positions: PortfolioPosition[];
 }
 
@@ -54,6 +55,8 @@ export interface PortfolioPosition {
   upside?: number;         // calculated
   total_return?: number;   // calculated % from entry_price to current_price
   cagr?: number;           // calculated annualized return
+  ytd_return?: number;     // YTD return %
+  ytd_contribution?: number; // YTD contribution in pp
   status: string;
 }
 
@@ -112,6 +115,27 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
     };
   });
 
+  // Compute YTD returns using Jan 1 price snapshots
+  const companyIds = rows.map((r: any) => r.id);
+  const jan1Date = `${new Date().getFullYear()}-01-01`;
+  const ytdResult = await pool.query(
+    `SELECT company_id, price FROM price_snapshots
+     WHERE snapshot_date = $1 AND company_id = ANY($2)`,
+    [jan1Date, companyIds]
+  );
+  const jan1PriceMap = new Map<string, number>();
+  for (const row of ytdResult.rows) {
+    jan1PriceMap.set(row.company_id, parseFloat(row.price));
+  }
+
+  for (const pos of positions) {
+    const jan1Price = jan1PriceMap.get(pos.id);
+    if (jan1Price && pos.current_price && jan1Price > 0) {
+      pos.ytd_return = ((pos.current_price - jan1Price) / jan1Price) * 100;
+      pos.ytd_contribution = ((pos.position_size ?? 0) / 100) * (pos.ytd_return / 100) * 100;
+    }
+  }
+
   // Compute weighted aggregates (only for positions with data)
   const withWeight = positions.filter(p => p.position_size && p.position_size > 0);
   const totalWeight = withWeight.reduce((s, p) => s + (p.position_size ?? 0), 0);
@@ -150,6 +174,14 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
     }
   }
 
+  // Compute overall YTD portfolio return (sum of ytd_contributions)
+  const ytdContributions = positions
+    .filter(p => p.ytd_contribution !== undefined)
+    .map(p => p.ytd_contribution!);
+  const ytdPortfolio = ytdContributions.length > 0
+    ? ytdContributions.reduce((a, b) => a + b, 0)
+    : undefined;
+
   return {
     total_invested: null,
     total_current_value: null,
@@ -159,6 +191,7 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
     weighted_ev_ebitda: weightedEvEbitda,
     weighted_upside: weightedUpside,
     weighted_cagr: weightedCagr,
+    ytd_portfolio: ytdPortfolio,
     positions,
   };
 }

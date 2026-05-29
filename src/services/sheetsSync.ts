@@ -2,20 +2,25 @@ import axios from 'axios';
 import pool from '../db';
 
 /**
- * Converts any Google Sheets URL (edit, share, etc.) to a CSV export URL.
- * Supports gid parameter for specific sheets.
+ * Converts any Google Sheets URL to a CSV export URL.
+ * Supports:
+ *  - Published pubhtml URLs: https://docs.google.com/spreadsheets/d/e/PUBKEY/pubhtml
+ *  - Regular edit/share URLs: https://docs.google.com/spreadsheets/d/ID/edit
  */
 function toCsvExportUrl(url: string): string {
-  // Extract the spreadsheet ID
+  // Published URL format: /d/e/PUBKEY/pubhtml
+  if (url.includes('/d/e/')) {
+    const match = url.match(/\/d\/e\/([a-zA-Z0-9_-]+)/);
+    if (!match) throw new Error('Invalid published Google Sheets URL');
+    const pubKey = match[1];
+    return `https://docs.google.com/spreadsheets/d/e/${pubKey}/pub?output=csv`;
+  }
+
+  // Regular edit URL format: /spreadsheets/d/ID
   const idMatch = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
   if (!idMatch) throw new Error('Invalid Google Sheets URL');
   const id = idMatch[1];
-
-  // Extract gid if present
-  const gidMatch = url.match(/[?&#]gid=(\d+)/);
-  const gid = gidMatch ? `&gid=${gidMatch[1]}` : '';
-
-  return `https://docs.google.com/spreadsheets/d/${id}/export?format=csv${gid}`;
+  return `https://docs.google.com/spreadsheets/d/${id}/export?format=csv`;
 }
 
 /**
@@ -77,28 +82,6 @@ function toNum(s: string): number | null {
   return isNaN(n) ? null : n;
 }
 
-function toStatus(s: string): string {
-  const lower = s.toLowerCase();
-  if (lower.includes('activ') || lower === 'active') return 'active';
-  if (lower.includes('watch')) return 'watchlist';
-  if (lower.includes('close') || lower.includes('cerr')) return 'closed';
-  if (lower.includes('sold') || lower.includes('vend')) return 'sold';
-  return 'active'; // default for portfolio rows
-}
-
-function toDate(s: string): string | null {
-  if (!s) return null;
-  // Try ISO
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  // Try dd/mm/yyyy
-  const parts = s.split(/[\/\-\.]/);
-  if (parts.length === 3) {
-    if (parts[2].length === 4) return `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
-    if (parts[0].length === 4) return `${parts[0]}-${parts[1].padStart(2,'0')}-${parts[2].padStart(2,'0')}`;
-  }
-  return null;
-}
-
 export interface SyncResult {
   updated: number;
   inserted: number;
@@ -136,20 +119,9 @@ export async function syncFromSheets(sheetUrl: string): Promise<SyncResult> {
     const name = pick(row, 'name', 'nombre', 'empresa', 'company', 'nombre_empresa', 'company_name');
     if (!name) { result.skipped++; continue; }
 
-    const ticker   = pick(row, 'ticker', 'symbol', 'simbolo');
-    const sector   = pick(row, 'sector', 'industria', 'industry');
-    const currency = pick(row, 'currency', 'moneda', 'divisa') || 'EUR';
-    const status   = toStatus(pick(row, 'status', 'estado', 'estado_posicion', 'estado_empresa') || 'active');
-
-    const entry_price   = toNum(pick(row, 'entry_price', 'precio_entrada', 'entry', 'coste'));
-    const current_price = toNum(pick(row, 'current_price', 'precio_actual', 'precio', 'price', 'current'));
-    const target_price  = toNum(pick(row, 'target_price', 'precio_objetivo', 'objetivo', 'target'));
-    const position_size = toNum(pick(row, 'position_size', 'peso', 'weight', 'posicion', 'position', 'peso_'));
-    const pe_ratio      = toNum(pick(row, 'pe_ratio', 'pe', 'p_e', 'ratio_pe', 'per'));
-    const ev_ebitda     = toNum(pick(row, 'ev_ebitda', 'evebitda', 'ev', 'ev_ebitda_ratio'));
-    const conviction_v  = toNum(pick(row, 'conviction', 'conviccion', 'stars', 'rating'));
-    const conviction    = conviction_v != null ? Math.min(5, Math.max(1, Math.round(conviction_v))) : null;
-    const entry_date    = toDate(pick(row, 'entry_date', 'fecha_entrada', 'fecha'));
+    const ticker     = pick(row, 'ticker', 'symbol', 'simbolo');
+    const sector     = pick(row, 'sector', 'industria', 'industry');
+    const entry_price = toNum(pick(row, 'entry_price', 'precio_entrada', 'entry', 'coste'));
 
     try {
       const existing = await pool.query(
@@ -158,36 +130,23 @@ export async function syncFromSheets(sheetUrl: string): Promise<SyncResult> {
       );
 
       if (existing.rows.length > 0) {
-        // Update
+        // Update only ticker, entry_price, sector — do not overwrite other fields
         await pool.query(
           `UPDATE companies SET
-            ticker=$1, sector=$2, currency=$3, status=$4,
-            entry_price=COALESCE($5, entry_price),
-            current_price=COALESCE($6, current_price),
-            target_price=COALESCE($7, target_price),
-            position_size=COALESCE($8, position_size),
-            pe_ratio=COALESCE($9, pe_ratio),
-            ev_ebitda=COALESCE($10, ev_ebitda),
-            conviction=COALESCE($11, conviction),
-            entry_date=COALESCE($12, entry_date),
-            updated_at=NOW()
-           WHERE id=$13`,
-          [ticker||null, sector||null, currency, status,
-           entry_price, current_price, target_price, position_size,
-           pe_ratio, ev_ebitda, conviction, entry_date,
-           existing.rows[0].id]
+            ticker = COALESCE($1, ticker),
+            entry_price = COALESCE($2, entry_price),
+            sector = COALESCE($3, sector),
+            updated_at = NOW()
+           WHERE id = $4`,
+          [ticker || null, entry_price, sector || null, existing.rows[0].id]
         );
         result.updated++;
       } else {
-        // Insert
+        // Insert new company with minimal fields; default status and currency
         await pool.query(
-          `INSERT INTO companies
-           (name, ticker, sector, currency, status, entry_price, current_price,
-            target_price, position_size, pe_ratio, ev_ebitda, conviction, entry_date)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-          [name, ticker||null, sector||null, currency, status,
-           entry_price, current_price, target_price, position_size,
-           pe_ratio, ev_ebitda, conviction, entry_date]
+          `INSERT INTO companies (name, ticker, sector, entry_price, status, currency)
+           VALUES ($1, $2, $3, $4, 'watchlist', 'EUR')`,
+          [name, ticker || null, sector || null, entry_price]
         );
         result.inserted++;
       }

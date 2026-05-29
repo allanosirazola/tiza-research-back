@@ -6,6 +6,7 @@ import {
   fetchPageBlocksCached,
   invalidateCache,
 } from '../notionClient';
+import { parseModelFromUrl } from '../services/modelParser';
 
 const router = Router();
 
@@ -43,6 +44,7 @@ router.post('/', async (req: Request, res: Response) => {
       nav_url,
       ir_url,
       alert_threshold,
+      model_url,
     } = req.body;
 
     if (!name) {
@@ -54,9 +56,9 @@ router.post('/', async (req: Request, res: Response) => {
       `INSERT INTO companies (
         id, name, ticker, sector, market_cap, currency, current_price, target_price,
         entry_price, entry_date, pe_ratio, ev_ebitda, conviction, position_size, status,
-        notion_page_id, notion_page_url, logo_url, notes, nav_url, ir_url, alert_threshold
+        notion_page_id, notion_page_url, logo_url, notes, nav_url, ir_url, alert_threshold, model_url
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
       )`,
       [
         id, name, ticker ?? null, sector ?? null, market_cap ?? null,
@@ -64,7 +66,7 @@ router.post('/', async (req: Request, res: Response) => {
         entry_price ?? null, entry_date ?? null, pe_ratio ?? null, ev_ebitda ?? null,
         conviction ?? null, position_size ?? null, status ?? 'watchlist',
         notion_page_id ?? null, notion_page_url ?? null, logo_url ?? null,
-        notes ?? null, nav_url ?? null, ir_url ?? null, alert_threshold ?? 20,
+        notes ?? null, nav_url ?? null, ir_url ?? null, alert_threshold ?? 20, model_url ?? null,
       ]
     );
 
@@ -100,7 +102,7 @@ router.put('/:id', async (req: Request, res: Response) => {
       'name', 'ticker', 'sector', 'market_cap', 'currency', 'current_price',
       'target_price', 'entry_price', 'entry_date', 'pe_ratio', 'ev_ebitda',
       'conviction', 'position_size', 'status', 'notion_page_id', 'notion_page_url',
-      'logo_url', 'notes', 'nav_url', 'ir_url', 'alert_threshold',
+      'logo_url', 'notes', 'nav_url', 'ir_url', 'alert_threshold', 'model_url',
     ];
 
     const updates: string[] = [];
@@ -190,6 +192,31 @@ router.post('/:id/sync-notion', async (req: Request, res: Response) => {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Failed to sync from Notion' });
+  }
+});
+
+// POST /api/companies/:id/parse-model
+// Body: { url?: string }  — uses company's model_url if no url in body
+router.post('/:id/parse-model', async (req: Request, res: Response) => {
+  try {
+    const company = await pool.query('SELECT * FROM companies WHERE id = $1', [req.params.id]);
+    if (company.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
+
+    const modelUrl = req.body?.url ?? company.rows[0].model_url;
+    if (!modelUrl) return res.status(400).json({ error: 'No model URL provided' });
+
+    // Save the URL if it was provided in body
+    if (req.body?.url) {
+      await pool.query('UPDATE companies SET model_url = $1, updated_at = NOW() WHERE id = $2', [req.body.url, req.params.id]);
+    }
+
+    const kpis = await parseModelFromUrl(modelUrl);
+    await pool.query('UPDATE companies SET model_kpis = $1, updated_at = NOW() WHERE id = $2', [JSON.stringify(kpis), req.params.id]);
+
+    return res.json({ success: true, kpis });
+  } catch (err: any) {
+    console.error('[parse-model]', err);
+    return res.status(500).json({ error: err.message ?? 'Failed to parse model' });
   }
 });
 
