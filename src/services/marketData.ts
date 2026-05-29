@@ -14,24 +14,17 @@ export interface QuoteData {
   lastUpdated: string;
 }
 
-// yahoo-finance2 is ESM-only, so we use dynamic import in a CJS context
-// The default export is the pre-configured singleton instance with all modules registered
+// yahoo-finance2 is ESM-only (exports via package.json "exports" → ESM only).
+// Dynamic import returns a module namespace; default export is the YahooFinance CLASS
+// (createYahooFinance returns the class, not an instance). We must call new.
 let _yahooFinanceInstance: any = null;
 async function getYahooFinance(): Promise<any> {
   if (_yahooFinanceInstance) return _yahooFinanceInstance;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mod = await (Function('return import("yahoo-finance2")')() as Promise<any>);
-  // Try candidates in order: default export, the module itself, or a nested default.
-  // Pick the first one that actually has the .quote method registered.
-  const candidates = [mod.default, mod, mod.default?.default];
-  for (const c of candidates) {
-    if (c && typeof c.quote === 'function') {
-      _yahooFinanceInstance = c;
-      return _yahooFinanceInstance;
-    }
-  }
-  // Fallback — at least assign something so we fail gracefully later
-  _yahooFinanceInstance = mod.default ?? mod;
+  const YFClass = mod.default ?? mod;
+  // YFClass is the class; instance methods (quote, autoc) live on the prototype
+  _yahooFinanceInstance = typeof YFClass === 'function' ? new YFClass() : YFClass;
   return _yahooFinanceInstance;
 }
 
@@ -191,37 +184,25 @@ export interface FundamentalsData {
 
 export async function fetchFundamentals(ticker: string): Promise<FundamentalsData> {
   const yahooFinance = await getYahooFinance();
-
-  // Fetch both quote (for price) and quoteSummary (for fundamentals)
-  const [quote, summary] = await Promise.allSettled([
-    yahooFinance.quote(ticker),
-    yahooFinance.quoteSummary(ticker, {
-      modules: ['defaultKeyStatistics', 'summaryDetail', 'assetProfile'],
-    }),
-  ]);
-
-  const q = quote.status === 'fulfilled' ? quote.value : null;
-  const s = summary.status === 'fulfilled' ? summary.value : null;
-
-  const keyStats = s?.defaultKeyStatistics ?? {};
-  const summaryDetail = s?.summaryDetail ?? {};
-  const assetProfile = s?.assetProfile ?? {};
+  // This version of yahoo-finance2 only has `quote` and `autoc` modules.
+  // The v7 quote API returns enough fields for our needs (PE, EV/EBITDA, sector, etc.)
+  const q = await yahooFinance.quote(ticker);
 
   return {
     ticker,
     name: q?.longName ?? q?.shortName ?? undefined,
     price: q?.regularMarketPrice ?? undefined,
     currency: q?.currency ?? undefined,
-    marketCap: q?.marketCap ?? keyStats.enterpriseValue ?? undefined,
-    trailingPE: summaryDetail.trailingPE ?? q?.trailingPE ?? undefined,
-    forwardPE: summaryDetail.forwardPE ?? q?.forwardPE ?? undefined,
-    priceToBook: keyStats.priceToBook ?? undefined,
-    enterpriseToEbitda: keyStats.enterpriseToEbitda ?? undefined,
-    enterpriseToRevenue: keyStats.enterpriseToRevenue ?? undefined,
-    week52High: q?.fiftyTwoWeekHigh ?? summaryDetail.fiftyTwoWeekHigh ?? undefined,
-    week52Low: q?.fiftyTwoWeekLow ?? summaryDetail.fiftyTwoWeekLow ?? undefined,
-    sector: assetProfile.sector ?? undefined,
-    industry: assetProfile.industry ?? undefined,
+    marketCap: q?.marketCap ?? undefined,
+    trailingPE: q?.trailingPE ?? undefined,
+    forwardPE: q?.forwardPE ?? undefined,
+    priceToBook: q?.priceToBook ?? undefined,
+    enterpriseToEbitda: q?.enterpriseToEbitda ?? undefined,
+    enterpriseToRevenue: q?.enterpriseToRevenue ?? undefined,
+    week52High: q?.fiftyTwoWeekHigh ?? undefined,
+    week52Low: q?.fiftyTwoWeekLow ?? undefined,
+    sector: q?.sector ?? undefined,
+    industry: q?.industry ?? undefined,
   };
 }
 

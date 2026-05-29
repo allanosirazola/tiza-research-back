@@ -1,19 +1,13 @@
 import pool from '../db';
 
-// yahoo-finance2 is ESM-only, so we use dynamic import in a CJS context
+// yahoo-finance2 default export is the CLASS; instance methods live on the prototype
 let _yahooFinanceInstance: any = null;
 async function getYahooFinance(): Promise<any> {
   if (_yahooFinanceInstance) return _yahooFinanceInstance;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mod = await (Function('return import("yahoo-finance2")')() as Promise<any>);
-  const candidates = [mod.default, mod, mod.default?.default];
-  for (const c of candidates) {
-    if (c && typeof c.historical === 'function') {
-      _yahooFinanceInstance = c;
-      return _yahooFinanceInstance;
-    }
-  }
-  _yahooFinanceInstance = mod.default ?? mod;
+  const YFClass = mod.default ?? mod;
+  _yahooFinanceInstance = typeof YFClass === 'function' ? new YFClass() : YFClass;
   return _yahooFinanceInstance;
 }
 
