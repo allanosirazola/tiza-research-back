@@ -15,13 +15,22 @@ export interface QuoteData {
 }
 
 // yahoo-finance2 is ESM-only, so we use dynamic import in a CJS context
-// The default export is the YahooFinance class; we instantiate it once
+// The default export is the pre-configured singleton instance with all modules registered
 let _yahooFinanceInstance: any = null;
 async function getYahooFinance(): Promise<any> {
   if (_yahooFinanceInstance) return _yahooFinanceInstance;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mod = await (Function('return import("yahoo-finance2")')() as Promise<any>);
-  // yahoo-finance2 default export IS the pre-configured instance with all modules registered
+  // Try candidates in order: default export, the module itself, or a nested default.
+  // Pick the first one that actually has the .quote method registered.
+  const candidates = [mod.default, mod, mod.default?.default];
+  for (const c of candidates) {
+    if (c && typeof c.quote === 'function') {
+      _yahooFinanceInstance = c;
+      return _yahooFinanceInstance;
+    }
+  }
+  // Fallback — at least assign something so we fail gracefully later
   _yahooFinanceInstance = mod.default ?? mod;
   return _yahooFinanceInstance;
 }

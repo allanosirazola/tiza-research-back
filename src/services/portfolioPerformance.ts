@@ -6,7 +6,13 @@ async function getYahooFinance(): Promise<any> {
   if (_yahooFinanceInstance) return _yahooFinanceInstance;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mod = await (Function('return import("yahoo-finance2")')() as Promise<any>);
-  // yahoo-finance2 default export IS the pre-configured instance with all modules registered
+  const candidates = [mod.default, mod, mod.default?.default];
+  for (const c of candidates) {
+    if (c && typeof c.historical === 'function') {
+      _yahooFinanceInstance = c;
+      return _yahooFinanceInstance;
+    }
+  }
   _yahooFinanceInstance = mod.default ?? mod;
   return _yahooFinanceInstance;
 }
