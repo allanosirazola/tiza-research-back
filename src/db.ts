@@ -135,6 +135,8 @@ export async function initDb(): Promise<void> {
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS subsector TEXT;
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_kpis JSONB;
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS estado TEXT DEFAULT 'pendiente';
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS thesis_url TEXT;
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS thesis_content TEXT;
 
     CREATE TABLE IF NOT EXISTS company_events (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -47,6 +47,8 @@ router.post('/', async (req: Request, res: Response) => {
       model_url,
       estado,
       subsector,
+      thesis_url,
+      thesis_content,
     } = req.body;
 
     if (!name) {
@@ -59,10 +61,10 @@ router.post('/', async (req: Request, res: Response) => {
         id, name, ticker, sector, market_cap, currency, current_price, target_price,
         entry_price, entry_date, pe_ratio, ev_ebitda, conviction, position_size, status,
         notion_page_id, notion_page_url, logo_url, notes, nav_url, ir_url, alert_threshold, model_url, estado,
-        subsector
+        subsector, thesis_url, thesis_content
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
-        $25
+        $25, $26, $27
       )`,
       [
         id, name, ticker ?? null, sector ?? null, market_cap ?? null,
@@ -72,7 +74,7 @@ router.post('/', async (req: Request, res: Response) => {
         notion_page_id ?? null, notion_page_url ?? null, logo_url ?? null,
         notes ?? null, nav_url ?? null, ir_url ?? null, alert_threshold ?? 20, model_url ?? null,
         estado ?? null,
-        subsector ?? null,
+        subsector ?? null, thesis_url ?? null, thesis_content ?? null,
       ]
     );
 
@@ -109,6 +111,7 @@ router.put('/:id', async (req: Request, res: Response) => {
       'target_price', 'entry_price', 'entry_date', 'pe_ratio', 'ev_ebitda',
       'conviction', 'position_size', 'status', 'notion_page_id', 'notion_page_url',
       'logo_url', 'notes', 'nav_url', 'ir_url', 'alert_threshold', 'model_url', 'estado', 'subsector',
+      'thesis_url', 'thesis_content',
     ];
 
     const updates: string[] = [];
