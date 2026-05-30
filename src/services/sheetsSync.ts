@@ -123,14 +123,26 @@ function parseRow(line: string): string[] {
 function parseCsv(text: string): { rows: Record<string, string>[]; rawHeaders: string[]; normHeaders: string[] } {
   const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
 
-  // Anchor on the real positions header ("Producto | Cantidad | Sector"). The sheet
-  // has summary/accounting blocks above and below the table whose stray cells were
-  // being imported as bogus companies, so lock onto the Producto row when present.
+  // Anchor on the POSITIONS header ("Producto | Cantidad | Sector"). The sheet has
+  // summary blocks plus a second SALES table whose header also starts with
+  // "Producto" but carries a "Valor venta" column. Anchoring on the sales header
+  // would misalign every row (no share count → no weight), so we explicitly skip
+  // any header containing "valor venta"/"valor salvado" and prefer a row that has
+  // both "cantidad" and "sector".
   let headerLine = -1;
-  for (let i = 0; i < Math.min(40, lines.length); i++) {
+  let headerScore = -1;
+  for (let i = 0; i < Math.min(60, lines.length); i++) {
     const norm = parseRow(lines[i]).map(normalize);
-    if (norm.includes('producto') || (norm.includes('cantidad') && norm.includes('sector'))) {
-      headerLine = i; break;
+    const isSales = norm.some(c => c.includes('valor_venta') || c.includes('valor_salvado'));
+    if (isSales) continue;
+    const hasProducto = norm.some(c => c.includes('producto'));
+    const hasCantidad = norm.some(c => c.includes('cantidad'));
+    const hasSector   = norm.some(c => c.includes('sector'));
+    // Score candidates; the positions header has all three.
+    const score = (hasProducto ? 1 : 0) + (hasCantidad ? 1 : 0) + (hasSector ? 1 : 0);
+    if ((hasProducto || (hasCantidad && hasSector)) && score > headerScore) {
+      headerLine = i; headerScore = score;
+      if (score === 3) break; // perfect match — stop early
     }
   }
   // Fallback: first row that looks like a header (≥2 non-empty cells).
