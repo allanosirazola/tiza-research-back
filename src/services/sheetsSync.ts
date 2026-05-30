@@ -51,12 +51,14 @@ export async function fetchSheetTabs(pubhtmlUrl: string): Promise<{ name: string
     if (gid && name && !tabs.find(t => t.gid === gid)) tabs.push({ gid, name });
   };
 
-  // Shape A: <a ... href="#gid=123" ...>Name</a>  (anchor text, attrs in any order)
-  const reA = /href="#gid=(\d+)"[^>]*>([\s\S]*?)<\/a>/g;
+  // Google's published tab bar renders each sheet as an anchor whose href contains
+  // gid=NUMBER (either "#gid=123" or a full "...pubhtml?gid=123&single=true" URL),
+  // with the tab name as the anchor text. Match gid= anywhere inside the href.
+  const reA = /<a\b[^>]*\bhref="[^"]*[?#]gid=(\d+)[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
   let m: RegExpExecArray | null;
   while ((m = reA.exec(html)) !== null) add(m[1], m[2]);
 
-  // Shape B: <li id="sheet-button-123" ...>Name</li>  (id-based, text may have spans)
+  // Fallback B: id-based tab buttons (<li id="sheet-button-123">Name</li>).
   if (tabs.length === 0) {
     const reB = /id="sheet-button-(\d+)"[^>]*>([\s\S]*?)<\/li>/g;
     while ((m = reB.exec(html)) !== null) add(m[1], m[2]);
@@ -260,7 +262,7 @@ export async function syncFromSheets(
   for (const row of rows) {
     // Try to find company name — fallback to first non-empty column
     let name = pick(row, normHeaders,
-      'name', 'nombre', 'empresa', 'compania', 'company',
+      'producto', 'name', 'nombre', 'empresa', 'compania', 'company',
       'nombre_empresa', 'company_name', 'razon_social', 'titulo'
     );
 
