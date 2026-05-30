@@ -7,6 +7,7 @@ import {
   invalidateCache,
 } from '../notionClient';
 import { parseModelFromUrl } from '../services/modelParser';
+import { fetchModelCases, resolveCasesGid } from '../services/modelCases';
 
 const router = Router();
 
@@ -226,6 +227,60 @@ router.post('/:id/parse-model', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[parse-model]', err);
     return res.status(500).json({ error: err.message ?? 'Failed to parse model' });
+  }
+});
+
+// GET /api/companies/:id/model-cases?returnCell=H10&cagrCell=H11&gid=...
+// Returns the "valoración por casos" grid + the user-chosen return/CAGR cells.
+router.get('/:id/model-cases', async (req: Request, res: Response) => {
+  try {
+    const c = await pool.query('SELECT * FROM companies WHERE id = $1', [req.params.id]);
+    if (c.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
+    const company = c.rows[0];
+    if (!company.model_url) return res.status(400).json({ error: 'No model URL set for this company' });
+
+    const returnCell = (req.query.returnCell as string) || company.model_return_cell || 'H10';
+    const cagrCell   = (req.query.cagrCell as string)   || company.model_cagr_cell   || 'H11';
+    const gid        = (req.query.gid as string)        || company.model_cases_gid   || undefined;
+
+    const data = await fetchModelCases(company.model_url, { gid, returnCell, cagrCell });
+    return res.json(data);
+  } catch (err: any) {
+    console.error('[model-cases]', err);
+    return res.status(500).json({ error: err.message ?? 'Failed to fetch model cases' });
+  }
+});
+
+// POST /api/companies/:id/model-cases
+// Body: { returnCell?, cagrCell?, gid? } — persists chosen cells and the computed
+// return/CAGR so the portfolio can show them (N/A when no model is set).
+router.post('/:id/model-cases', async (req: Request, res: Response) => {
+  try {
+    const c = await pool.query('SELECT * FROM companies WHERE id = $1', [req.params.id]);
+    if (c.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
+    const company = c.rows[0];
+    if (!company.model_url) return res.status(400).json({ error: 'No model URL set for this company' });
+
+    const returnCell = (req.body?.returnCell as string) || company.model_return_cell || 'H10';
+    const cagrCell   = (req.body?.cagrCell as string)   || company.model_cagr_cell   || 'H11';
+    let gid          = (req.body?.gid as string)        || company.model_cases_gid   || undefined;
+    if (!gid) gid = await resolveCasesGid(company.model_url);
+
+    const data = await fetchModelCases(company.model_url, { gid, returnCell, cagrCell });
+
+    await pool.query(
+      `UPDATE companies SET
+        model_return = $1, model_cagr = $2,
+        model_return_cell = $3, model_cagr_cell = $4, model_cases_gid = $5,
+        updated_at = NOW()
+       WHERE id = $6`,
+      [data.returnValue, data.cagrValue, returnCell, cagrCell, data.gid, req.params.id]
+    );
+
+    return res.json({ success: true, ...data });
+  } catch (err: any) {
+    console.error('[model-cases:save]', err);
+    return res.status(500).json({ error: err.message ?? 'Failed to save model cases' });
   }
 });
 
