@@ -51,17 +51,23 @@ export async function fetchSheetTabs(pubhtmlUrl: string): Promise<{ name: string
     if (gid && name && !tabs.find(t => t.gid === gid)) tabs.push({ gid, name });
   };
 
-  // Google's published tab bar renders each sheet as an anchor whose href contains
-  // gid=NUMBER (either "#gid=123" or a full "...pubhtml?gid=123&single=true" URL),
-  // with the tab name as the anchor text. Match gid= anywhere inside the href.
-  const reA = /<a\b[^>]*\bhref="[^"]*[?#]gid=(\d+)[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+  // Google publishes the tab bar as a <ul id="sheet-menu"> of
+  // <li id="sheet-button-GID"><a href="...gid=GID...">Name</a></li>. Markup varies,
+  // so match each <li id="sheet-button-N"> ... </li> and take its anchor/inner text.
+  const reLi = /id="sheet-button-(\d+)"[\s\S]*?<a\b[^>]*>([\s\S]*?)<\/a>/g;
   let m: RegExpExecArray | null;
-  while ((m = reA.exec(html)) !== null) add(m[1], m[2]);
+  while ((m = reLi.exec(html)) !== null) add(m[1], m[2]);
 
-  // Fallback B: id-based tab buttons (<li id="sheet-button-123">Name</li>).
+  // Fallback: any anchor whose href carries gid=NUMBER, name = anchor text.
   if (tabs.length === 0) {
-    const reB = /id="sheet-button-(\d+)"[^>]*>([\s\S]*?)<\/li>/g;
-    while ((m = reB.exec(html)) !== null) add(m[1], m[2]);
+    const reA = /<a\b[^>]*\bhref="[^"]*[?#&]gid=(\d+)[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+    while ((m = reA.exec(html)) !== null) add(m[1], m[2]);
+  }
+
+  // Last resort: scan for gid=NUMBER anywhere and grab nearby text as the name.
+  if (tabs.length === 0) {
+    const reG = /[?#&]gid=(\d+)[^>]*>([^<]{1,40})</g;
+    while ((m = reG.exec(html)) !== null) add(m[1], m[2]);
   }
   return tabs;
 }
@@ -189,8 +195,11 @@ export async function syncFromSheets(
   opts: { tab?: string; gid?: string } = {},
 ): Promise<SyncResult> {
   // Portfolio positions live on the current-year tab (e.g. "2026"), not the first
-  // sheet. Prefer an explicit gid (manual selector); otherwise resolve by year name.
-  let gid = opts.gid;
+  // sheet. Prefer an explicit numeric gid (manual selector); otherwise resolve by
+  // year/tab name. A non-numeric "gid" (e.g. the user typed "2026") is treated as a
+  // tab name so it still works instead of producing an invalid CSV URL (HTTP 400).
+  let gid = opts.gid && /^\d+$/.test(opts.gid) ? opts.gid : undefined;
+  const nameHint = opts.tab || (opts.gid && !/^\d+$/.test(opts.gid) ? opts.gid : undefined);
   let tabName: string | undefined;
   let tabs: { name: string; gid: string }[] = [];
   let tabError: string | undefined;
@@ -198,7 +207,7 @@ export async function syncFromSheets(
     try { tabs = await fetchSheetTabs(sheetUrl); } catch { /* non-fatal */ }
     tabName = tabs.find(t => t.gid === gid)?.name ?? `gid ${gid}`;
   } else {
-    ({ gid, tabName, tabs, tabError } = await resolveYearGid(sheetUrl, opts.tab));
+    ({ gid, tabName, tabs, tabError } = await resolveYearGid(sheetUrl, nameHint));
   }
   const csvUrl = toCsvExportUrl(sheetUrl, gid);
   const result: SyncResult = {
