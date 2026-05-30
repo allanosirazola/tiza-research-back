@@ -129,14 +129,29 @@ router.get('/diagnose', async (req: Request, res: Response) => {
   const url = (req.query.url as string) || DEFAULT_SHEETS_URL;
   const out: any = { url, steps: {} };
 
-  // 1) Can the host reach the pubhtml at all?
+  // 1) Can the host reach the pubhtml at all? Also capture raw HTML snippets around
+  // every gid= occurrence so we can see Google's exact tab markup.
   try {
     const r = await axios.get<string>(url, {
       timeout: 20000, responseType: 'text',
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' },
       validateStatus: () => true,
     });
-    out.steps.pubhtml = { status: r.status, bytes: (r.data || '').length };
+    const html = r.data || '';
+    const snippets: string[] = [];
+    const re = /gid=\d+/g;
+    let mm: RegExpExecArray | null;
+    while ((mm = re.exec(html)) !== null && snippets.length < 6) {
+      snippets.push(html.slice(Math.max(0, mm.index - 60), mm.index + 80).replace(/\s+/g, ' '));
+    }
+    // Also look for the tab-bar container markup.
+    const barIdx = html.search(/sheet-button|switcherItem|gridTab|menucontainer/i);
+    out.steps.pubhtml = {
+      status: r.status,
+      bytes: html.length,
+      gidSnippets: snippets,
+      barSnippet: barIdx >= 0 ? html.slice(barIdx, barIdx + 400).replace(/\s+/g, ' ') : null,
+    };
   } catch (e: any) {
     out.steps.pubhtml = { error: e?.message, code: e?.code };
   }
