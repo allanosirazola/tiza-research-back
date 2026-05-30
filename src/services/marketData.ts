@@ -109,6 +109,32 @@ export function resolveYahooSymbol(raw: string): string {
   return `${symbol}${suffix}`;
 }
 
+// German floor exchanges (Frankfurt, Stuttgart, Munich…) and Xetra all quote in EUR
+// but Yahoo's coverage is uneven across them — e.g. Constellation Software trades as
+// FRA:W9C but Yahoo may only carry W9C.DE (Xetra), not W9C.F. Try the siblings.
+const GERMAN_VENUE_SUFFIXES = ['.DE', '.F', '.SG', '.MU', '.BE', '.DU', '.HM', '.HA'];
+const GERMAN_EXCHANGES = ['FRA', 'ETR', 'GER', 'XETRA', 'STU', 'MUN', 'BER', 'DUS', 'HAM', 'HAN'];
+
+/** Ordered list of Yahoo symbols to try for a stored ticker; the first that returns
+ *  price data wins. Adds sibling German venues so FRA/ETR tickers resolve robustly. */
+export function yahooCandidates(raw: string): string[] {
+  const t = (raw ?? '').trim();
+  if (!t) return [];
+  const out = [resolveYahooSymbol(t)];
+  const colon = t.indexOf(':');
+  if (colon !== -1) {
+    const exchange = t.slice(0, colon).trim().toUpperCase();
+    const symbol = t.slice(colon + 1).trim().toUpperCase();
+    if (GERMAN_EXCHANGES.includes(exchange)) {
+      for (const s of GERMAN_VENUE_SUFFIXES) {
+        const c = `${symbol}${s}`;
+        if (!out.includes(c)) out.push(c);
+      }
+    }
+  }
+  return out;
+}
+
 /** Yahoo quotes some venues in minor units (London = GBp pence, Tel Aviv = ILA
  *  agorot, Johannesburg = ZAc cents): 100 minor = 1 major. Return the divisor and
  *  the major-unit currency so price/52w fields can be normalized consistently.
@@ -298,17 +324,54 @@ function rawNum(v: any): number | undefined {
   return isNaN(n) ? undefined : n;
 }
 
+// Yahoo symbol search — resolves a bare/foreign ticker to a real Yahoo symbol when
+// suffix construction fails (e.g. an obscure German listing). Prefers European
+// venues so a EUR-listed name doesn't resolve to a US ADR with a different price.
+async function yahooSearchSymbol(query: string): Promise<string | null> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0&enableFuzzyQuery=false`;
+    const res = await fetchT(url, {
+      headers: { 'User-Agent': UA, 'Accept': 'application/json', 'Referer': 'https://finance.yahoo.com/' },
+    });
+    if (!res.ok) return null;
+    const json = await res.json() as any;
+    const quotes: any[] = json?.quotes ?? [];
+    const eq = quotes.filter(q => q?.symbol && (q.quoteType === 'EQUITY' || q.isYahooFinance));
+    const euro = eq.find(q => /\.(DE|F|SG|MU|BE|DU|HM|HA|PA|AS|MI|MC|L|SW|BR|LS|VI|ST|HE|CO|OL)$/i.test(q.symbol));
+    return (euro ?? eq[0])?.symbol ?? null;
+  } catch { return null; }
+}
+
+// Resolve a stored ticker to a Yahoo v8 chart `meta` by trying each candidate symbol
+// and finally a Yahoo symbol search. Returns the meta plus the symbol that worked.
+async function resolveChartMeta(ticker: string): Promise<{ meta: any; symbol: string } | null> {
+  for (const cand of yahooCandidates(ticker)) {
+    try {
+      const meta = await yahooV8Chart(cand);
+      if (meta && meta.regularMarketPrice != null) return { meta, symbol: cand };
+    } catch { /* try next candidate */ }
+  }
+  const bare = ticker.includes(':') ? ticker.split(':')[1].trim() : ticker.trim();
+  const found = await yahooSearchSymbol(bare);
+  if (found) {
+    try {
+      const meta = await yahooV8Chart(found);
+      if (meta && meta.regularMarketPrice != null) return { meta, symbol: found };
+    } catch { /* give up */ }
+  }
+  return null;
+}
+
 /* ─── Public API ──────────────────────────────────────────────────── */
 
 export async function fetchQuote(ticker: string): Promise<QuoteData> {
-  // Translate "EPA:RMS"-style sheet tickers to Yahoo symbols before any API call.
-  const ySym = resolveYahooSymbol(ticker);
-  // v8 chart is the reliable base (no crumb required). v7 quote enriches when the
-  // crumb flow works, but a crumb failure must never break adding/refreshing a ticker.
-  const meta = await yahooV8Chart(ySym);
-  if (!meta || meta.regularMarketPrice == null) {
-    throw new Error(`No market data for ticker "${ticker}" (Yahoo symbol "${ySym}")`);
+  // Resolve "EPA:RMS" / "FRA:W9C"-style sheet tickers to a working Yahoo symbol,
+  // trying sibling exchanges and a symbol search for uneven foreign coverage.
+  const resolved = await resolveChartMeta(ticker);
+  if (!resolved) {
+    throw new Error(`No market data for ticker "${ticker}" (tried ${yahooCandidates(ticker).join(', ')})`);
   }
+  const { meta, symbol: ySym } = resolved;
 
   let q: any = null;
   try { q = await yahooV7Quote(ySym); } catch { /* enrichment optional */ }
@@ -414,12 +477,12 @@ export async function refreshAllCompanyPrices(): Promise<{ updated: number; erro
 }
 
 export async function fetchFundamentals(ticker: string): Promise<FundamentalsData> {
-  const ySym = resolveYahooSymbol(ticker);
-  // Reliable price base from v8 chart; never hard-fail for a valid ticker.
-  const meta = await yahooV8Chart(ySym);
-  if (!meta || meta.regularMarketPrice == null) {
-    throw new Error(`No market data for ticker "${ticker}" (Yahoo symbol "${ySym}")`);
+  // Reliable price base from v8 chart; resolve foreign tickers across venues/search.
+  const resolved = await resolveChartMeta(ticker);
+  if (!resolved) {
+    throw new Error(`No market data for ticker "${ticker}" (tried ${yahooCandidates(ticker).join(', ')})`);
   }
+  const { meta, symbol: ySym } = resolved;
 
   // Normalize minor units (London pence etc.) so price/52w are in the major unit.
   const { divisor, currency } = minorUnitAdjust(meta.currency);

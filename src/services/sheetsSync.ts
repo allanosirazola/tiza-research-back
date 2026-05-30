@@ -149,6 +149,18 @@ function parseCsv(text: string): { rows: Record<string, string>[]; rawHeaders: s
   for (let i = headerLine + 1; i < lines.length; i++) {
     const cells = parseRow(lines[i]);
     if (cells.every(c => !c.trim())) continue;
+
+    // Stop at the next table. The sheet repeats a "Producto | Ticker | … | Valor
+    // venta | …" header for the SALES log further down; its rows have ticker+sector
+    // and would otherwise be imported as (or overwrite) holdings. A row that
+    // re-declares a header — or introduces a "Valor venta" column — ends the
+    // positions table, so we stop reading there.
+    const norm = cells.map(normalize);
+    const isSalesHeader = norm.some(c => c.includes('valor_venta') || c.includes('valor_salvado'));
+    const isHeaderRepeat = norm.includes('producto') ||
+      (norm.includes('ticker') && norm.includes('cantidad'));
+    if (i !== headerLine && (isSalesHeader || isHeaderRepeat)) break;
+
     const row: Record<string, string> = {};
     normHeaders.forEach((h, idx) => { row[h] = (cells[idx] ?? '').trim(); });
     rows.push(row);
