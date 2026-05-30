@@ -1,5 +1,6 @@
 import axios from 'axios';
 import pool from '../db';
+import { refreshAllCompanyPrices } from './marketData';
 
 /**
  * Converts any Google Sheets URL to a CSV export URL.
@@ -178,6 +179,7 @@ export interface SyncResult {
   usedGid?: string;     // gid of that tab
   availableTabs?: string[]; // every tab detected (debugging which sheet was picked)
   deactivated?: number; // positions moved out of the portfolio (no longer in sheet)
+  pricesUpdated?: number; // companies whose live price was refreshed during sync
 }
 
 export async function syncFromSheets(
@@ -352,6 +354,15 @@ export async function syncFromSheets(
       console.log(`[sync] Deactivated ${deact.rowCount} positions no longer in sheet:`,
         deact.rows.map((r: any) => r.name).join(', '));
     }
+  }
+
+  // Pull live prices right away so weight (= shares × current price / total) can be
+  // computed immediately, instead of staying blank until the next price cron run.
+  try {
+    const r = await refreshAllCompanyPrices();
+    result.pricesUpdated = r.updated;
+  } catch (e: any) {
+    result.errors.push(`No se pudieron refrescar precios: ${e?.message ?? e}`);
   }
 
   return result;
