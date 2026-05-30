@@ -7,19 +7,55 @@ import pool from '../db';
  *  - Published pubhtml URLs: https://docs.google.com/spreadsheets/d/e/PUBKEY/pubhtml
  *  - Regular edit/share URLs: https://docs.google.com/spreadsheets/d/ID/edit
  */
-function toCsvExportUrl(url: string): string {
+function toCsvExportUrl(url: string, gid?: string): string {
   // Published URL format: /d/e/PUBKEY/pubhtml  (works without auth)
   if (url.includes('/d/e/')) {
     const match = url.match(/\/d\/e\/([a-zA-Z0-9_-]+)/);
     if (!match) throw new Error('Invalid published Google Sheets URL');
     const pubKey = match[1];
-    return `https://docs.google.com/spreadsheets/d/e/${pubKey}/pub?output=csv`;
+    const base = `https://docs.google.com/spreadsheets/d/e/${pubKey}/pub`;
+    return gid ? `${base}?gid=${gid}&single=true&output=csv` : `${base}?output=csv`;
   }
   // Regular edit URL — will likely get 403 unless publicly shared
   const idMatch = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
   if (!idMatch) throw new Error('Invalid Google Sheets URL. Use the published /pubhtml URL instead.');
   const id = idMatch[1];
-  return `https://docs.google.com/spreadsheets/d/${id}/export?format=csv`;
+  const base = `https://docs.google.com/spreadsheets/d/${id}/export?format=csv`;
+  return gid ? `${base}&gid=${gid}` : base;
+}
+
+/**
+ * Fetch the published pubhtml and return [{ name, gid }] for every sheet tab.
+ */
+async function fetchSheetTabs(pubhtmlUrl: string): Promise<{ name: string; gid: string }[]> {
+  const url = pubhtmlUrl.includes('/pubhtml')
+    ? pubhtmlUrl
+    : pubhtmlUrl.replace(/\/pub(\?.*)?$/, '/pubhtml');
+  const res = await axios.get<string>(url, {
+    timeout: 20000,
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' },
+  });
+  const html = res.data as string;
+  const tabs: { name: string; gid: string }[] = [];
+  const regex = /href="#gid=(\d+)"[^>]*>\s*([^<]+?)\s*<\/a>/g;
+  let m: RegExpExecArray | null;
+  while ((m = regex.exec(html)) !== null) {
+    const name = m[2].trim();
+    if (name && !tabs.find(t => t.gid === m![1])) tabs.push({ gid: m[1], name });
+  }
+  return tabs;
+}
+
+/** Find the gid of the tab whose name matches the current portfolio year (e.g. "2026"). */
+async function resolveYearGid(pubhtmlUrl: string): Promise<{ gid?: string; tabName?: string; tabs: { name: string; gid: string }[] }> {
+  let tabs: { name: string; gid: string }[] = [];
+  try { tabs = await fetchSheetTabs(pubhtmlUrl); } catch { return { tabs: [] }; }
+  const year = String(new Date().getFullYear());
+  // Exact match first ("2026"), then any tab that contains the year token.
+  const exact = tabs.find(t => t.name.trim() === year);
+  const partial = tabs.find(t => new RegExp(`\\b${year}\\b`).test(t.name));
+  const chosen = exact ?? partial;
+  return { gid: chosen?.gid, tabName: chosen?.name, tabs };
 }
 
 /** Remove diacritics/accents and lowercase — "Compañía" → "compania" */
@@ -117,8 +153,12 @@ export interface SyncResult {
 }
 
 export async function syncFromSheets(sheetUrl: string): Promise<SyncResult> {
-  const csvUrl = toCsvExportUrl(sheetUrl);
+  // Portfolio positions live on the current-year tab (e.g. "2026"), not the first
+  // sheet. Resolve that tab's gid; fall back to the default export if not found.
+  const { gid, tabName } = await resolveYearGid(sheetUrl);
+  const csvUrl = toCsvExportUrl(sheetUrl, gid);
   const result: SyncResult = { updated: 0, inserted: 0, skipped: 0, errors: [] };
+  if (tabName) console.log(`[sync] Using sheet tab "${tabName}" (gid=${gid})`);
 
   let csvText: string;
   try {
@@ -179,13 +219,24 @@ export async function syncFromSheets(sheetUrl: string): Promise<SyncResult> {
 
     const ticker = pick(row, normHeaders, 'ticker', 'symbol', 'simbolo', 'isin');
     const sector = pick(row, normHeaders, 'sector', 'industria', 'industry', 'segmento');
+
+    // Entry price = "Valor inicio año(USD)" column on the 2026 tab.
+    // "Valor inicio año(USD)" normalizes to "valor_inicio_anousd"; substring match
+    // on "valor_inicio" / "inicio_ano" keeps it robust to minor header variations.
     const entryPriceRaw = pick(row, normHeaders,
+      'valor_inicio_anousd', 'valor_inicio_ano', 'valor_inicio', 'inicio_ano',
       'entry_price', 'precio_entrada', 'precio_de_entrada',
       'coste', 'coste_medio', 'precio_compra', 'entrada'
     );
     const entry_price = toNum(entryPriceRaw);
 
-    // Also try to pull weight/position from sheet
+    // Share count ("Cantidad") — drives current value & weight (computed live, not from sheet).
+    const sharesRaw = pick(row, normHeaders,
+      'cantidad', 'acciones', 'shares', 'titulos', 'num_acciones', 'numero_de_acciones', 'qty', 'quantity'
+    );
+    const shares = toNum(sharesRaw);
+
+    // Optional explicit weight column (rarely present — weight is normally computed).
     const posRaw = pick(row, normHeaders,
       'position_size', 'peso', 'weight', 'posicion', 'pct', 'porcentaje', 'allocation'
     );
@@ -206,17 +257,18 @@ export async function syncFromSheets(sheetUrl: string): Promise<SyncResult> {
             entry_price  = COALESCE($2, entry_price),
             sector       = COALESCE(NULLIF($3,''), sector),
             position_size= COALESCE($4, position_size),
+            shares       = COALESCE($5, shares),
             status       = 'active',
             updated_at   = NOW()
-           WHERE id = $5`,
-          [ticker || null, entry_price, sector || null, position_size, existing.rows[0].id]
+           WHERE id = $6`,
+          [ticker || null, entry_price, sector || null, position_size, shares, existing.rows[0].id]
         );
         result.updated++;
       } else {
         await pool.query(
-          `INSERT INTO companies (name, ticker, sector, entry_price, position_size, status, currency)
-           VALUES ($1, $2, $3, $4, $5, 'active', 'EUR')`,
-          [name, ticker || null, sector || null, entry_price, position_size]
+          `INSERT INTO companies (name, ticker, sector, entry_price, position_size, shares, status, currency)
+           VALUES ($1, $2, $3, $4, $5, $6, 'active', 'USD')`,
+          [name, ticker || null, sector || null, entry_price, position_size, shares]
         );
         result.inserted++;
       }

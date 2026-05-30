@@ -41,17 +41,53 @@ export interface PortfolioPosition {
   entry_date?: string;
   current_price?: number;
   target_price?: number;
-  position_size?: number;  // weight %
+  shares?: number;          // "Cantidad" from the year sheet
+  market_value?: number;    // shares × current_price, converted to USD
+  position_size?: number;   // weight % — computed from market_value / total
   pe_ratio?: number;
   ev_ebitda?: number;
   conviction?: number;
-  upside?: number;         // calculated
-  total_return?: number;   // calculated % from entry_price to current_price
-  cagr?: number;           // calculated annualized return
-  ytd_return?: number;     // YTD return %
+  upside?: number;          // calculated
+  total_return?: number;    // from the model (model_return), N/A if no model
+  cagr?: number;            // from the model (model_cagr), N/A if no model
+  has_model?: boolean;      // whether return/CAGR come from a parsed model
+  ytd_return?: number;      // YTD return %
   ytd_contribution?: number; // YTD contribution in pp
   status: string;
   is_cash?: boolean;
+}
+
+// Minimal FX → USD conversion. Rates are refreshed lazily and cached for the
+// process lifetime; falls back to rough static rates if the API is unreachable.
+const FX_FALLBACK: Record<string, number> = {
+  USD: 1, EUR: 1.08, GBP: 1.27, CHF: 1.12, JPY: 0.0064, SEK: 0.095, DKK: 0.145, NOK: 0.092, CAD: 0.73,
+};
+let _fx: { rates: Record<string, number>; expiry: number } | null = null;
+
+async function getFxToUsd(): Promise<Record<string, number>> {
+  if (_fx && Date.now() < _fx.expiry) return _fx.rates;
+  try {
+    // exchangerate.host: base USD → how many units per USD; invert to "USD per unit".
+    const res = await fetch('https://api.exchangerate.host/latest?base=USD');
+    if (res.ok) {
+      const json = await res.json() as any;
+      const perUsd = json?.rates ?? {};
+      const rates: Record<string, number> = { USD: 1 };
+      for (const [cur, v] of Object.entries(perUsd)) {
+        const n = Number(v);
+        if (n > 0) rates[cur] = 1 / n;
+      }
+      _fx = { rates: { ...FX_FALLBACK, ...rates }, expiry: Date.now() + 6 * 3600 * 1000 };
+      return _fx.rates;
+    }
+  } catch { /* fall back */ }
+  _fx = { rates: FX_FALLBACK, expiry: Date.now() + 3600 * 1000 };
+  return _fx.rates;
+}
+
+function toUsd(amount: number, currency: string | undefined, fx: Record<string, number>): number {
+  const rate = fx[(currency ?? 'USD').toUpperCase()] ?? 1;
+  return amount * rate;
 }
 
 const CASH_NAME_PATTERNS = ['cash', 'liquidez', 'efectivo', 'cash and', 'treasury'];
@@ -72,35 +108,37 @@ function isCashPosition(pos: PortfolioPosition): boolean {
 export async function getPortfolioSummary(): Promise<PortfolioSummary> {
   const result = await pool.query(
     `SELECT id, name, ticker, sector, currency, entry_price, entry_date,
-            current_price, target_price, position_size, pe_ratio, ev_ebitda, conviction, status
+            current_price, target_price, position_size, shares,
+            model_return, model_cagr, pe_ratio, ev_ebitda, conviction, status
      FROM companies
      WHERE status = 'active'
      ORDER BY position_size DESC NULLS LAST`
   );
 
+  const fx = await getFxToUsd();
   const rows = result.rows;
   const positions: PortfolioPosition[] = rows.map((r: any) => {
-    const entryPrice = r.entry_price ? parseFloat(r.entry_price) : undefined;
-    const currentPrice = r.current_price ? parseFloat(r.current_price) : undefined;
-    const targetPrice = r.target_price ? parseFloat(r.target_price) : undefined;
+    const entryPrice = r.entry_price != null ? Number(r.entry_price) : undefined;
+    const currentPrice = r.current_price != null ? Number(r.current_price) : undefined;
+    const targetPrice = r.target_price != null ? Number(r.target_price) : undefined;
     const entryDate = r.entry_date ? String(r.entry_date).slice(0, 10) : undefined;
+    const shares = r.shares != null ? Number(r.shares) : undefined;
 
-    let totalReturn: number | undefined;
-    let cagr: number | undefined;
+    // Market value in USD = shares × current price (converted from listing currency).
+    let marketValue: number | undefined;
+    if (shares != null && currentPrice != null) {
+      marketValue = toUsd(shares * currentPrice, r.currency, fx);
+    }
+
     let upside: number | undefined;
-
-    if (entryPrice && currentPrice && entryPrice > 0) {
-      totalReturn = ((currentPrice - entryPrice) / entryPrice) * 100;
-    }
-    if (entryPrice && currentPrice && entryDate) {
-      const years = (Date.now() - new Date(entryDate).getTime()) / (365.25 * 24 * 3600 * 1000);
-      if (years > 0.01) {
-        cagr = (Math.pow(currentPrice / entryPrice, 1 / years) - 1) * 100;
-      }
-    }
     if (currentPrice && targetPrice && currentPrice > 0) {
       upside = ((targetPrice - currentPrice) / currentPrice) * 100;
     }
+
+    // Return & CAGR come from the valuation-by-cases model (chosen cells), not from
+    // price math. They stay undefined (→ N/A in the UI) when no model is parsed.
+    const modelReturn = r.model_return != null ? Number(r.model_return) : undefined;
+    const modelCagr   = r.model_cagr   != null ? Number(r.model_cagr)   : undefined;
 
     const pos: PortfolioPosition = {
       id: r.id,
@@ -112,18 +150,32 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
       entry_date: entryDate,
       current_price: currentPrice,
       target_price: targetPrice,
-      position_size: r.position_size ? parseFloat(r.position_size) : undefined,
-      pe_ratio: r.pe_ratio ? parseFloat(r.pe_ratio) : undefined,
-      ev_ebitda: r.ev_ebitda ? parseFloat(r.ev_ebitda) : undefined,
+      shares,
+      market_value: marketValue,
+      position_size: r.position_size != null ? Number(r.position_size) : undefined,
+      pe_ratio: r.pe_ratio != null ? Number(r.pe_ratio) : undefined,
+      ev_ebitda: r.ev_ebitda != null ? Number(r.ev_ebitda) : undefined,
       conviction: r.conviction,
       upside,
-      total_return: totalReturn,
-      cagr,
+      total_return: modelReturn,
+      cagr: modelCagr,
+      has_model: modelReturn != null || modelCagr != null,
       status: r.status,
     };
     pos.is_cash = isCashPosition(pos);
     return pos;
   });
+
+  // Compute weight from market value: weight% = position value / total portfolio value.
+  // Only override when we have real market values; otherwise keep any sheet-provided weight.
+  const totalMarketValue = positions.reduce((s, p) => s + (p.market_value ?? 0), 0);
+  if (totalMarketValue > 0) {
+    for (const p of positions) {
+      if (p.market_value != null) {
+        p.position_size = (p.market_value / totalMarketValue) * 100;
+      }
+    }
+  }
 
   // Compute YTD returns using Jan 1 price snapshots
   const companyIds = rows.map((r: any) => r.id);

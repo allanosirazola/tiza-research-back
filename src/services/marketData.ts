@@ -43,11 +43,24 @@ let _crumbPromise: Promise<{ crumb: string; cookies: string }> | null = null;
 
 function sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
 
+// Node's global fetch has no default timeout: if Yahoo stalls, the request hangs
+// forever and the "Buscar" button on the frontend spins indefinitely. Abort every
+// call after a bounded time so failures surface fast and enrichment stays optional.
+async function fetchT(url: string, init: RequestInit = {}, ms = 8000): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function _fetchCrumb(): Promise<{ crumb: string; cookies: string }> {
   // Collect cookies from finance.yahoo.com
   let cookies = '';
   try {
-    const homeRes = await fetch('https://finance.yahoo.com/', {
+    const homeRes = await fetchT('https://finance.yahoo.com/', {
       headers: {
         'User-Agent': UA,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -65,11 +78,12 @@ async function _fetchCrumb(): Promise<{ crumb: string; cookies: string }> {
     // If we can't get cookies, try without — Yahoo sometimes works
   }
 
-  // Fetch crumb with retry + exponential backoff for 429
-  for (let attempt = 0; attempt < 5; attempt++) {
-    if (attempt > 0) await sleep(Math.min(2000 * Math.pow(2, attempt - 1), 16000));
+  // Fetch crumb with a couple of quick retries. The crumb only powers optional
+  // enrichment (v7/v10), so keep waits short — v8 chart already returns price data.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await sleep(Math.min(800 * attempt, 2000));
     try {
-      const res = await fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {
+      const res = await fetchT('https://query1.finance.yahoo.com/v1/test/getcrumb', {
         headers: {
           'User-Agent': UA,
           'Accept': '*/*',
@@ -106,7 +120,7 @@ async function yahooV7Quote(ticker: string): Promise<any> {
     try {
       const { crumb, cookies } = await ensureCrumb();
       const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(ticker)}&crumb=${encodeURIComponent(crumb)}`;
-      const res = await fetch(url, {
+      const res = await fetchT(url, {
         headers: {
           'User-Agent': UA,
           'Accept': 'application/json',
@@ -144,7 +158,7 @@ async function yahooV8Chart(ticker: string): Promise<any> {
   for (const host of hosts) {
     try {
       const url = `https://${host}/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1d&includePrePost=false`;
-      const res = await fetch(url, {
+      const res = await fetchT(url, {
         headers: {
           'User-Agent': UA,
           'Accept': 'application/json',
@@ -170,7 +184,7 @@ async function yahooV10Summary(ticker: string): Promise<any> {
     try {
       const { crumb, cookies } = await ensureCrumb();
       const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=${modules}&crumb=${encodeURIComponent(crumb)}`;
-      const res = await fetch(url, {
+      const res = await fetchT(url, {
         headers: {
           'User-Agent': UA,
           'Accept': 'application/json',

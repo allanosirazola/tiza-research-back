@@ -135,6 +135,16 @@ export async function initDb(): Promise<void> {
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS subsector TEXT;
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_kpis JSONB;
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS estado TEXT DEFAULT 'pendiente';
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS thesis_url TEXT;
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS thesis_content TEXT;
+    -- Portfolio (2026 sheet): share count drives current value & weight
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS shares NUMERIC;
+    -- Return / CAGR sourced from the valuation-by-cases model sheet (user-chosen cells)
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_return NUMERIC;
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_cagr NUMERIC;
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_return_cell TEXT;
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_cagr_cell TEXT;
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_cases_gid TEXT;
 
     CREATE TABLE IF NOT EXISTS company_events (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
