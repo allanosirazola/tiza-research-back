@@ -186,10 +186,39 @@ router.get('/model-csv', async (req: Request, res: Response) => {
       cells.push(cur.trim());
       return cells;
     };
-    const rows = lines.filter(l => l.trim()).map(parseRow);
-    const headers = rows[0] ?? [];
-    const dataRows = rows.slice(1).filter(r => r.some(c => c.trim()));
-    return res.json({ headers, rows: dataRows });
+    const allRows = lines.map(parseRow);
+
+    // Detect the real header row. Financial models often have title/spacer rows on top,
+    // so rows[0] is rarely the header. Prefer the first row containing >= 2 year-like
+    // tokens (2023, 2025e, FY24...); otherwise fall back to the row with the most
+    // non-empty cells within the first 15 rows.
+    const yearRe = /^(fy\s?)?('?\d{2}|(19|20)\d{2})e?$/i;
+    let headerIdx = -1;
+    for (let i = 0; i < Math.min(allRows.length, 15); i++) {
+      const yearCount = allRows[i].filter(c => yearRe.test(c.trim())).length;
+      if (yearCount >= 2) { headerIdx = i; break; }
+    }
+    if (headerIdx === -1) {
+      let bestFilled = 1;
+      for (let i = 0; i < Math.min(allRows.length, 15); i++) {
+        const filled = allRows[i].filter(c => c.trim()).length;
+        if (filled > bestFilled) { bestFilled = filled; headerIdx = i; }
+      }
+      if (headerIdx === -1) headerIdx = 0;
+    }
+
+    // Trim trailing fully-empty columns so the table isn't padded with blanks.
+    const headerRaw = allRows[headerIdx] ?? [];
+    let lastCol = headerRaw.length - 1;
+    while (lastCol > 0 && !headerRaw[lastCol]?.trim()) lastCol--;
+    const headers = headerRaw.slice(0, lastCol + 1);
+
+    const dataRows = allRows
+      .slice(headerIdx + 1)
+      .map(r => r.slice(0, lastCol + 1))
+      .filter(r => r.some(c => c.trim()));
+
+    return res.json({ headers, rows: dataRows, headerRow: headerIdx });
   } catch (err: any) {
     console.error('[model-csv]', err);
     return res.status(500).json({ error: 'Failed to fetch CSV data', details: err.message });

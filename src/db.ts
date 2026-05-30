@@ -1,4 +1,12 @@
-import { Pool } from 'pg';
+import { Pool, types } from 'pg';
+
+// PostgreSQL returns NUMERIC/DECIMAL (OID 1700) and BIGINT (OID 20) as strings by
+// default. The frontend treats these columns as JS numbers (e.g. price.toFixed()),
+// so strings cause "x.toFixed is not a function" crashes. Parse them to numbers at
+// the driver level so every query returns real numbers. NUMERIC values in this app
+// (prices, market caps, ratios) are well within IEEE-754 safe range.
+types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)));
+types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)));
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
