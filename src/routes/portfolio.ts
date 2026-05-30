@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import axios from 'axios';
 import { getPortfolioSummary, getPeriodReturns } from '../services/portfolioPerformance';
-import { syncFromSheets } from '../services/sheetsSync';
+import { syncFromSheets, fetchSheetTabs } from '../services/sheetsSync';
 import pool from '../db';
 
 const DEFAULT_SHEETS_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vS5d6l6QsJmv_uJyzyKjt_h5ekWayV45ARu5wIrv-eBto2d_Gv0T3W02JSKfsdQa6SZSwKajb0ELA8l/pubhtml';
@@ -109,14 +109,28 @@ router.post('/seed-companies', async (_req: Request, res: Response) => {
   }
 });
 
+// GET /api/portfolio/sheet-tabs?url=PUBHTML  — list tabs for the portfolio sheet
+router.get('/sheet-tabs', async (req: Request, res: Response) => {
+  try {
+    const url = (req.query.url as string) || DEFAULT_SHEETS_URL;
+    const tabs = await fetchSheetTabs(url);
+    return res.json({ tabs });
+  } catch (err: any) {
+    console.error('[sheet-tabs]', err);
+    return res.status(500).json({ error: err.message ?? 'Failed to list sheet tabs', tabs: [] });
+  }
+});
+
 // POST /api/portfolio/sync-sheets
-// Body: { url?: string, tab?: string }  — uses DEFAULT_SHEETS_URL when url is omitted;
-// `tab` overrides which sheet tab to sync (defaults to the current year, e.g. "2026").
+// Body: { url?, tab?, gid? } — uses DEFAULT_SHEETS_URL when url is omitted.
+// `gid` selects the tab explicitly (manual selector); `tab` matches by name;
+// otherwise it defaults to the current year (e.g. "2026").
 router.post('/sync-sheets', async (req: Request, res: Response) => {
   try {
     const url: string = req.body?.url ?? DEFAULT_SHEETS_URL;
     const tab: string | undefined = req.body?.tab;
-    const result = await syncFromSheets(url, tab);
+    const gid: string | undefined = req.body?.gid;
+    const result = await syncFromSheets(url, { tab, gid });
     return res.json({
       updated: result.updated + result.inserted,
       errors: result.errors,

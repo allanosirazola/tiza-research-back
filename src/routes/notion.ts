@@ -5,8 +5,23 @@ import {
   extractPageIdFromUrl,
   invalidateCache,
 } from '../notionClient';
+import { scrapePage } from '../services/pageScraper';
 
 const router = Router();
+
+// GET /api/notion/scrape?url=...  — fetch a public web/notion.site page server-side
+// (notion.site forbids iframing) and return sanitized HTML to render inline.
+router.get('/scrape', async (req: Request, res: Response) => {
+  try {
+    const url = req.query.url as string;
+    if (!url) return res.status(400).json({ error: 'URL is required' });
+    const page = await scrapePage(url);
+    return res.json(page);
+  } catch (err: any) {
+    console.error('[scrape]', err?.message);
+    return res.status(500).json({ error: err?.message ?? 'No se pudo cargar la página' });
+  }
+});
 
 router.get('/page/:pageId', async (req: Request, res: Response) => {
   try {

@@ -35,7 +35,7 @@ function decodeEntities(s: string): string {
  * Google Sheets renders the tab bar as <li id="sheet-button-GID">...<a ...>Name</a>.
  * We try several markup shapes so detection is resilient to layout changes.
  */
-async function fetchSheetTabs(pubhtmlUrl: string): Promise<{ name: string; gid: string }[]> {
+export async function fetchSheetTabs(pubhtmlUrl: string): Promise<{ name: string; gid: string }[]> {
   const url = pubhtmlUrl.includes('/pubhtml')
     ? pubhtmlUrl
     : pubhtmlUrl.replace(/\/pub(\?.*)?$/, '/pubhtml');
@@ -177,12 +177,25 @@ export interface SyncResult {
   usedTab?: string;     // name of the sheet tab actually synced
   usedGid?: string;     // gid of that tab
   availableTabs?: string[]; // every tab detected (debugging which sheet was picked)
+  deactivated?: number; // positions moved out of the portfolio (no longer in sheet)
 }
 
-export async function syncFromSheets(sheetUrl: string, preferredTab?: string): Promise<SyncResult> {
+export async function syncFromSheets(
+  sheetUrl: string,
+  opts: { tab?: string; gid?: string } = {},
+): Promise<SyncResult> {
   // Portfolio positions live on the current-year tab (e.g. "2026"), not the first
-  // sheet. Resolve that tab's gid; fall back to the default export if not found.
-  const { gid, tabName, tabs, tabError } = await resolveYearGid(sheetUrl, preferredTab);
+  // sheet. Prefer an explicit gid (manual selector); otherwise resolve by year name.
+  let gid = opts.gid;
+  let tabName: string | undefined;
+  let tabs: { name: string; gid: string }[] = [];
+  let tabError: string | undefined;
+  if (gid) {
+    try { tabs = await fetchSheetTabs(sheetUrl); } catch { /* non-fatal */ }
+    tabName = tabs.find(t => t.gid === gid)?.name ?? `gid ${gid}`;
+  } else {
+    ({ gid, tabName, tabs, tabError } = await resolveYearGid(sheetUrl, opts.tab));
+  }
   const csvUrl = toCsvExportUrl(sheetUrl, gid);
   const result: SyncResult = {
     updated: 0, inserted: 0, skipped: 0, errors: [],
@@ -191,8 +204,8 @@ export async function syncFromSheets(sheetUrl: string, preferredTab?: string): P
   console.log(`[sync] Tabs detected: ${tabs.map(t => `${t.name}#${t.gid}`).join(', ') || '(none)'}`);
   console.log(`[sync] Using sheet tab "${tabName ?? '(first/default)'}" (gid=${gid ?? 'default'})`);
   if (tabError) result.errors.push(`Aviso pestañas: ${tabError}`);
-  if (!tabName) {
-    const year = preferredTab || String(new Date().getFullYear());
+  if (!gid && !opts.gid) {
+    const year = opts.tab || String(new Date().getFullYear());
     result.errors.push(
       tabs.length
         ? `No se encontró la pestaña "${year}". Pestañas: ${tabs.map(t => t.name).join(', ')}. Usando la primera hoja.`
@@ -237,6 +250,10 @@ export async function syncFromSheets(sheetUrl: string, preferredTab?: string): P
 
   result.sample = JSON.stringify(rows[0]);
   console.log('[sync] First row sample:', result.sample);
+
+  // Track every company present on the 2026 tab so we can deactivate the rest:
+  // the 2026 sheet is the source of truth for what is currently held.
+  const seenIds: string[] = [];
 
   for (const row of rows) {
     // Try to find company name — fallback to first non-empty column
@@ -291,29 +308,49 @@ export async function syncFromSheets(sheetUrl: string, preferredTab?: string): P
       );
 
       if (existing.rows.length > 0) {
+        // Overwrite shares/entry from the sheet (the 2026 tab is authoritative),
+        // not COALESCE — a blank in the sheet should clear a stale value.
         await pool.query(
           `UPDATE companies SET
             ticker       = COALESCE(NULLIF($1,''), ticker),
-            entry_price  = COALESCE($2, entry_price),
+            entry_price  = $2,
             sector       = COALESCE(NULLIF($3,''), sector),
-            position_size= COALESCE($4, position_size),
-            shares       = COALESCE($5, shares),
+            position_size= $4,
+            shares       = $5,
             status       = 'active',
             updated_at   = NOW()
            WHERE id = $6`,
           [ticker || null, entry_price, sector || null, position_size, shares, existing.rows[0].id]
         );
+        seenIds.push(existing.rows[0].id);
         result.updated++;
       } else {
-        await pool.query(
+        const ins = await pool.query(
           `INSERT INTO companies (name, ticker, sector, entry_price, position_size, shares, status, currency)
-           VALUES ($1, $2, $3, $4, $5, $6, 'active', 'USD')`,
+           VALUES ($1, $2, $3, $4, $5, $6, 'active', 'USD') RETURNING id`,
           [name, ticker || null, sector || null, entry_price, position_size, shares]
         );
+        seenIds.push(ins.rows[0].id);
         result.inserted++;
       }
     } catch (e: any) {
       result.errors.push(`${name}: ${e.message}`);
+    }
+  }
+
+  // The 2026 tab is the live portfolio: any company still marked active but absent
+  // from the sheet (e.g. ASML after it was sold) is moved out of the portfolio.
+  if (seenIds.length > 0) {
+    const deact = await pool.query(
+      `UPDATE companies SET status = 'sold', updated_at = NOW()
+       WHERE status = 'active' AND id <> ALL($1::uuid[])
+       RETURNING name`,
+      [seenIds]
+    );
+    result.deactivated = deact.rowCount ?? 0;
+    if (deact.rowCount) {
+      console.log(`[sync] Deactivated ${deact.rowCount} positions no longer in sheet:`,
+        deact.rows.map((r: any) => r.name).join(', '));
     }
   }
 
