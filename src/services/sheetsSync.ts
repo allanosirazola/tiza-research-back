@@ -123,11 +123,23 @@ function parseRow(line: string): string[] {
 function parseCsv(text: string): { rows: Record<string, string>[]; rawHeaders: string[]; normHeaders: string[] } {
   const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
 
-  // Find the first row that looks like a header (has at least 2 non-empty cells)
-  let headerLine = 0;
-  for (let i = 0; i < Math.min(5, lines.length); i++) {
-    const cells = parseRow(lines[i]);
-    if (cells.filter(c => c.trim()).length >= 2) { headerLine = i; break; }
+  // Anchor on the real positions header ("Producto | Cantidad | Sector"). The sheet
+  // has summary/accounting blocks above and below the table whose stray cells were
+  // being imported as bogus companies, so lock onto the Producto row when present.
+  let headerLine = -1;
+  for (let i = 0; i < Math.min(40, lines.length); i++) {
+    const norm = parseRow(lines[i]).map(normalize);
+    if (norm.includes('producto') || (norm.includes('cantidad') && norm.includes('sector'))) {
+      headerLine = i; break;
+    }
+  }
+  // Fallback: first row that looks like a header (≥2 non-empty cells).
+  if (headerLine === -1) {
+    headerLine = 0;
+    for (let i = 0; i < Math.min(5, lines.length); i++) {
+      const cells = parseRow(lines[i]);
+      if (cells.filter(c => c.trim()).length >= 2) { headerLine = i; break; }
+    }
   }
 
   const rawHeaders = parseRow(lines[headerLine]).map(h => h.trim());
@@ -176,6 +188,45 @@ function toNum(s: string): number | null {
   return isNaN(n) ? null : n;
 }
 
+// Normalized name fragments that identify summary/accounting rows (not holdings):
+// "2024 Start Value", "Money Invested", "Turnover", "Return on assets",
+// "Comisiones", "Interés", "Ventas", "SPYTD", "Valor compra", etc.
+const JUNK_NAME_TOKENS = [
+  'producto', 'cantidad', 'start_value', 'money_invest', 'invested', 'turnover',
+  'on_assets', 'assets', 'roa', 'coste', 'comision', 'interes', 'spytd', 'sp_ytd',
+  'valor_compra', 'valor_inicio', 'ventas', 'difference', 'win_lost', 'win_lose',
+  'return_on', 'spi500', 'sp500', 'benchmark', 'total',
+];
+
+function letterCount(s: string): number {
+  return (s.match(/\p{L}/gu) ?? []).length;
+}
+
+/** A real sector cell has letters and is not a bare number. */
+function hasRealSector(sector: string): boolean {
+  const s = (sector ?? '').trim();
+  return s.length >= 3 && toNum(s) === null && /\p{L}/u.test(s);
+}
+
+/** A usable ticker has at least one letter and is not a bare number. */
+function hasUsableTicker(ticker: string): boolean {
+  const t = (ticker ?? '').trim();
+  return t.length >= 1 && /[A-Za-z]/.test(t) && toNum(t) === null;
+}
+
+/**
+ * Decide whether a sheet row is an actual portfolio holding (vs. a summary line,
+ * a stray number, or a name-only fragment from a neighbouring block). A holding
+ * needs a real name plus EITHER a ticker OR a recognizable sector.
+ */
+function isRealHolding(name: string, ticker: string, sector: string): boolean {
+  const nm = (name ?? '').trim();
+  if (letterCount(nm) < 2) return false;                       // pure numbers / fragments
+  const n = normalize(nm);
+  if (JUNK_NAME_TOKENS.some(j => n.includes(j))) return false; // accounting/summary rows
+  return hasUsableTicker(ticker) || hasRealSector(sector);
+}
+
 export interface SyncResult {
   updated: number;
   inserted: number;
@@ -188,6 +239,7 @@ export interface SyncResult {
   availableTabs?: string[]; // every tab detected (debugging which sheet was picked)
   deactivated?: number; // positions moved out of the portfolio (no longer in sheet)
   pricesUpdated?: number; // companies whose live price was refreshed during sync
+  purged?: number;      // junk rows (summary/number/fragment) removed from the DB
 }
 
 export async function syncFromSheets(
@@ -281,14 +333,12 @@ export async function syncFromSheets(
       if (firstKey) name = row[firstKey];
     }
 
-    if (!name || name.length < 2) { result.skipped++; continue; }
-    // Skip header-like rows that got through
-    if (['nombre', 'empresa', 'name', 'company', 'compania'].includes(name.toLowerCase())) {
-      result.skipped++; continue;
-    }
-
     const ticker = pick(row, normHeaders, 'ticker', 'symbol', 'simbolo', 'isin');
     const sector = pick(row, normHeaders, 'sector', 'industria', 'industry', 'segmento');
+
+    // Only import genuine holdings. This rejects the summary/accounting rows,
+    // stray numbers and name-only fragments that were polluting the watchlist.
+    if (!isRealHolding(name, ticker, sector)) { result.skipped++; continue; }
 
     // Entry price = "Valor inicio año(USD)" column on the 2026 tab.
     // "Valor inicio año(USD)" normalizes to "valor_inicio_anousd"; substring match
@@ -367,6 +417,34 @@ export async function syncFromSheets(
     if (deact.rowCount) {
       console.log(`[sync] Deactivated ${deact.rowCount} positions no longer in sheet:`,
         deact.rows.map((r: any) => r.name).join(', '));
+    }
+
+    // One-time cleanup: earlier syncs imported summary lines, stray numbers and
+    // name fragments as bogus companies. Delete those leftovers — but never touch
+    // curated companies (thesis, model or Notion page) or current holdings.
+    try {
+      const { rows: all } = await pool.query(
+        `SELECT id, name, ticker, sector FROM companies
+         WHERE notion_page_id IS NULL
+           AND (thesis_url IS NULL OR thesis_url = '')
+           AND (thesis_content IS NULL OR thesis_content = '')
+           AND (model_url IS NULL OR model_url = '')`
+      );
+      const seen = new Set(seenIds);
+      const junkIds = all
+        .filter((c: any) => !seen.has(c.id) &&
+          !isRealHolding(c.name ?? '', c.ticker ?? '', c.sector ?? ''))
+        .map((c: any) => c.id);
+      if (junkIds.length) {
+        const del = await pool.query(
+          `DELETE FROM companies WHERE id = ANY($1::uuid[]) RETURNING name`, [junkIds]
+        );
+        result.purged = del.rowCount ?? 0;
+        console.log(`[sync] Purged ${del.rowCount} junk rows:`,
+          del.rows.map((r: any) => r.name).join(', '));
+      }
+    } catch (e: any) {
+      result.errors.push(`No se pudo limpiar basura: ${e?.message ?? e}`);
     }
   }
 
