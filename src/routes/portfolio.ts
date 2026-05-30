@@ -121,6 +121,59 @@ router.get('/sheet-tabs', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/portfolio/diagnose?url=PUBHTML[&gid=GID]
+// Reports exactly what the SERVER sees: whether Google is reachable from the host,
+// the detected tabs, the CSV headers and first rows for the chosen tab. This is the
+// ground truth for debugging why the portfolio doesn't match the 2026 sheet.
+router.get('/diagnose', async (req: Request, res: Response) => {
+  const url = (req.query.url as string) || DEFAULT_SHEETS_URL;
+  const out: any = { url, steps: {} };
+
+  // 1) Can the host reach the pubhtml at all?
+  try {
+    const r = await axios.get<string>(url, {
+      timeout: 20000, responseType: 'text',
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' },
+      validateStatus: () => true,
+    });
+    out.steps.pubhtml = { status: r.status, bytes: (r.data || '').length };
+  } catch (e: any) {
+    out.steps.pubhtml = { error: e?.message, code: e?.code };
+  }
+
+  // 2) Tab detection
+  try {
+    out.steps.tabs = await fetchSheetTabs(url);
+  } catch (e: any) {
+    out.steps.tabs = { error: e?.message };
+  }
+
+  // 3) CSV for chosen/auto gid
+  try {
+    const tabs = Array.isArray(out.steps.tabs) ? out.steps.tabs : [];
+    const year = String(new Date().getFullYear());
+    const gid = (req.query.gid as string)
+      || tabs.find((t: any) => t.name?.trim() === year)?.gid
+      || tabs.find((t: any) => (t.name || '').includes(year))?.gid;
+    const pubKeyM = url.match(/\/d\/e\/([a-zA-Z0-9_-]+)/);
+    const pubKey = pubKeyM ? pubKeyM[1] : '';
+    const csvUrl = gid
+      ? `https://docs.google.com/spreadsheets/d/e/${pubKey}/pub?gid=${gid}&single=true&output=csv`
+      : `https://docs.google.com/spreadsheets/d/e/${pubKey}/pub?output=csv`;
+    const r = await axios.get<string>(csvUrl, {
+      timeout: 20000, responseType: 'text',
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' },
+      validateStatus: () => true,
+    });
+    const lines = (r.data || '').split(/\r?\n/).slice(0, 6);
+    out.steps.csv = { gidUsed: gid ?? '(default/first)', status: r.status, firstLines: lines };
+  } catch (e: any) {
+    out.steps.csv = { error: e?.message };
+  }
+
+  return res.json(out);
+});
+
 // POST /api/portfolio/sync-sheets
 // Body: { url?, tab?, gid? } — uses DEFAULT_SHEETS_URL when url is omitted.
 // `gid` selects the tab explicitly (manual selector); `tab` matches by name;
