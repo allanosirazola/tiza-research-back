@@ -338,9 +338,12 @@ export async function syncFromSheets(
         seenIds.push(existing.rows[0].id);
         result.updated++;
       } else {
+        // Don't force a currency: many positions are non-US (EPA:RMS, FRA:W9C…).
+        // The price refresh that runs right after sync sets the real listing
+        // currency from Yahoo, which the portfolio FX conversion then relies on.
         const ins = await pool.query(
-          `INSERT INTO companies (name, ticker, sector, entry_price, position_size, shares, status, currency)
-           VALUES ($1, $2, $3, $4, $5, $6, 'active', 'USD') RETURNING id`,
+          `INSERT INTO companies (name, ticker, sector, entry_price, position_size, shares, status)
+           VALUES ($1, $2, $3, $4, $5, $6, 'active') RETURNING id`,
           [name, ticker || null, sector || null, entry_price, position_size, shares]
         );
         seenIds.push(ins.rows[0].id);
