@@ -24,8 +24,16 @@ function toCsvExportUrl(url: string, gid?: string): string {
   return gid ? `${base}&gid=${gid}` : base;
 }
 
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
+}
+
 /**
  * Fetch the published pubhtml and return [{ name, gid }] for every sheet tab.
+ * Google Sheets renders the tab bar as <li id="sheet-button-GID">...<a ...>Name</a>.
+ * We try several markup shapes so detection is resilient to layout changes.
  */
 async function fetchSheetTabs(pubhtmlUrl: string): Promise<{ name: string; gid: string }[]> {
   const url = pubhtmlUrl.includes('/pubhtml')
@@ -37,23 +45,39 @@ async function fetchSheetTabs(pubhtmlUrl: string): Promise<{ name: string; gid: 
   });
   const html = res.data as string;
   const tabs: { name: string; gid: string }[] = [];
-  const regex = /href="#gid=(\d+)"[^>]*>\s*([^<]+?)\s*<\/a>/g;
+  const add = (gid: string, rawName: string) => {
+    const name = decodeEntities(rawName).replace(/<[^>]+>/g, '').trim();
+    if (gid && name && !tabs.find(t => t.gid === gid)) tabs.push({ gid, name });
+  };
+
+  // Shape A: <a ... href="#gid=123" ...>Name</a>  (anchor text, attrs in any order)
+  const reA = /href="#gid=(\d+)"[^>]*>([\s\S]*?)<\/a>/g;
   let m: RegExpExecArray | null;
-  while ((m = regex.exec(html)) !== null) {
-    const name = m[2].trim();
-    if (name && !tabs.find(t => t.gid === m![1])) tabs.push({ gid: m[1], name });
+  while ((m = reA.exec(html)) !== null) add(m[1], m[2]);
+
+  // Shape B: <li id="sheet-button-123" ...>Name</li>  (id-based, text may have spans)
+  if (tabs.length === 0) {
+    const reB = /id="sheet-button-(\d+)"[^>]*>([\s\S]*?)<\/li>/g;
+    while ((m = reB.exec(html)) !== null) add(m[1], m[2]);
   }
   return tabs;
 }
 
 /** Find the gid of the tab whose name matches the current portfolio year (e.g. "2026"). */
-async function resolveYearGid(pubhtmlUrl: string): Promise<{ gid?: string; tabName?: string; tabs: { name: string; gid: string }[] }> {
+async function resolveYearGid(
+  pubhtmlUrl: string,
+  preferredName?: string,
+): Promise<{ gid?: string; tabName?: string; tabs: { name: string; gid: string }[]; tabError?: string }> {
   let tabs: { name: string; gid: string }[] = [];
-  try { tabs = await fetchSheetTabs(pubhtmlUrl); } catch { return { tabs: [] }; }
-  const year = String(new Date().getFullYear());
-  // Exact match first ("2026"), then any tab that contains the year token.
-  const exact = tabs.find(t => t.name.trim() === year);
-  const partial = tabs.find(t => new RegExp(`\\b${year}\\b`).test(t.name));
+  try {
+    tabs = await fetchSheetTabs(pubhtmlUrl);
+  } catch (e: any) {
+    return { tabs: [], tabError: e?.message ?? 'No se pudieron leer las pestañas' };
+  }
+  const year = preferredName?.trim() || String(new Date().getFullYear());
+  // Exact match first, then any tab whose name contains the year token.
+  const exact = tabs.find(t => t.name.trim().toLowerCase() === year.toLowerCase());
+  const partial = tabs.find(t => new RegExp(`\\b${year}\\b`, 'i').test(t.name));
   const chosen = exact ?? partial;
   return { gid: chosen?.gid, tabName: chosen?.name, tabs };
 }
@@ -150,15 +174,31 @@ export interface SyncResult {
   errors: string[];
   headers?: string[];   // raw column names found — useful for debugging
   sample?: string;      // first data row for debugging
+  usedTab?: string;     // name of the sheet tab actually synced
+  usedGid?: string;     // gid of that tab
+  availableTabs?: string[]; // every tab detected (debugging which sheet was picked)
 }
 
-export async function syncFromSheets(sheetUrl: string): Promise<SyncResult> {
+export async function syncFromSheets(sheetUrl: string, preferredTab?: string): Promise<SyncResult> {
   // Portfolio positions live on the current-year tab (e.g. "2026"), not the first
   // sheet. Resolve that tab's gid; fall back to the default export if not found.
-  const { gid, tabName } = await resolveYearGid(sheetUrl);
+  const { gid, tabName, tabs, tabError } = await resolveYearGid(sheetUrl, preferredTab);
   const csvUrl = toCsvExportUrl(sheetUrl, gid);
-  const result: SyncResult = { updated: 0, inserted: 0, skipped: 0, errors: [] };
-  if (tabName) console.log(`[sync] Using sheet tab "${tabName}" (gid=${gid})`);
+  const result: SyncResult = {
+    updated: 0, inserted: 0, skipped: 0, errors: [],
+    usedTab: tabName, usedGid: gid, availableTabs: tabs.map(t => t.name),
+  };
+  console.log(`[sync] Tabs detected: ${tabs.map(t => `${t.name}#${t.gid}`).join(', ') || '(none)'}`);
+  console.log(`[sync] Using sheet tab "${tabName ?? '(first/default)'}" (gid=${gid ?? 'default'})`);
+  if (tabError) result.errors.push(`Aviso pestañas: ${tabError}`);
+  if (!tabName) {
+    const year = preferredTab || String(new Date().getFullYear());
+    result.errors.push(
+      tabs.length
+        ? `No se encontró la pestaña "${year}". Pestañas: ${tabs.map(t => t.name).join(', ')}. Usando la primera hoja.`
+        : `No se detectaron pestañas en el sheet publicado. Usando la primera hoja.`
+    );
+  }
 
   let csvText: string;
   try {

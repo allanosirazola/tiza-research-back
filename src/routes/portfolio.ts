@@ -110,11 +110,13 @@ router.post('/seed-companies', async (_req: Request, res: Response) => {
 });
 
 // POST /api/portfolio/sync-sheets
-// Body: { url?: string }  — uses DEFAULT_SHEETS_URL when url is omitted
+// Body: { url?: string, tab?: string }  — uses DEFAULT_SHEETS_URL when url is omitted;
+// `tab` overrides which sheet tab to sync (defaults to the current year, e.g. "2026").
 router.post('/sync-sheets', async (req: Request, res: Response) => {
   try {
     const url: string = req.body?.url ?? DEFAULT_SHEETS_URL;
-    const result = await syncFromSheets(url);
+    const tab: string | undefined = req.body?.tab;
+    const result = await syncFromSheets(url, tab);
     return res.json({
       updated: result.updated + result.inserted,
       errors: result.errors,
