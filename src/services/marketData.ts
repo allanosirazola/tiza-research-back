@@ -37,6 +37,91 @@ export interface FundamentalsData {
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
 
+/* ─── Symbol resolution: Google Finance "EXCHANGE:TICKER" → Yahoo symbol ─────
+ * The portfolio sheet stores tickers in Google Finance format (e.g. EPA:RMS for
+ * Hermès, FRA:W9C for Constellation on Frankfurt, BME:IDR for Indra). Yahoo uses
+ * a SUFFIX scheme instead (RMS.PA, W9C.F, IDR.MC), so a bare "EPA:RMS" returns no
+ * data — which is exactly why non-US prices were broken. We translate the Google
+ * exchange prefix to Yahoo's suffix. US exchanges carry no suffix. */
+const GOOGLE_EXCHANGE_TO_YAHOO_SUFFIX: Record<string, string> = {
+  // ── United States — no suffix ──
+  NASDAQ: '', NYSE: '', NYSEARCA: '', NYSEAMERICAN: '', AMEX: '', BATS: '', OTCMKTS: '', OTC: '',
+  // ── Euronext ──
+  EPA: '.PA',                 // Paris
+  AMS: '.AS',                 // Amsterdam
+  EBR: '.BR',                 // Brussels
+  ELI: '.LS',                 // Lisbon
+  // ── Germany ──
+  ETR: '.DE',                 // Xetra
+  FRA: '.F',                  // Frankfurt
+  // ── Iberia / Italy / UK / Switzerland ──
+  BME: '.MC', BMAD: '.MC',    // Madrid
+  BIT: '.MI', MIL: '.MI',     // Milan (Borsa Italiana)
+  LON: '.L',                  // London
+  SWX: '.SW', VTX: '.SW', EBS: '.SW', // SIX Swiss
+  // ── Nordics ──
+  STO: '.ST',                 // Stockholm
+  HEL: '.HE',                 // Helsinki
+  CPH: '.CO',                 // Copenhagen
+  // ── Rest of Europe ──
+  OSL: '.OL',                 // Oslo
+  WSE: '.WA', GPW: '.WA',     // Warsaw
+  VIE: '.VI',                 // Vienna
+  IST: '.IS',                 // Istanbul
+  ATH: '.AT',                 // Athens
+  ISE: '.IR',                 // Ireland (Dublin)
+  // ── Americas (non-US) ──
+  TSE: '.TO', TSX: '.TO',     // Toronto
+  CVE: '.V', TSXV: '.V',      // TSX Venture
+  BVMF: '.SA',                // Brazil (B3)
+  BMV: '.MX',                 // Mexico
+  // ── Asia-Pacific ──
+  TYO: '.T',                  // Tokyo
+  HKG: '.HK',                 // Hong Kong
+  SHA: '.SS',                 // Shanghai
+  SHE: '.SZ',                 // Shenzhen
+  KRX: '.KS', KOSDAQ: '.KQ',  // Korea
+  TPE: '.TW',                 // Taiwan
+  NSE: '.NS', BOM: '.BO',     // India
+  ASX: '.AX',                 // Australia
+  NZE: '.NZ',                 // New Zealand
+  SGX: '.SI',                 // Singapore
+  // ── Middle East / Africa ──
+  TLV: '.TA',                 // Tel Aviv
+  JSE: '.JO',                 // Johannesburg
+};
+
+/** Translate a stored ticker into a Yahoo Finance symbol.
+ *  - "EPA:RMS"   → "RMS.PA"     (Google Finance exchange:ticker)
+ *  - "NASDAQ:AAPL" → "AAPL"     (US, no suffix)
+ *  - "BRK.B" (US) → "BRK-B"     (Yahoo uses a dash for class shares)
+ *  - "RMS.PA" / "AAPL"          → unchanged (already a Yahoo symbol). */
+export function resolveYahooSymbol(raw: string): string {
+  const t = (raw ?? '').trim();
+  if (!t) return t;
+  const colon = t.indexOf(':');
+  if (colon === -1) return t; // already a plain/Yahoo symbol
+  const exchange = t.slice(0, colon).trim().toUpperCase();
+  const symbol = t.slice(colon + 1).trim().toUpperCase();
+  const suffix = GOOGLE_EXCHANGE_TO_YAHOO_SUFFIX[exchange];
+  if (suffix === undefined) return symbol;          // unknown exchange → best-effort bare symbol
+  if (suffix === '') return symbol.replace('.', '-'); // US class shares: BRK.B → BRK-B
+  return `${symbol}${suffix}`;
+}
+
+/** Yahoo quotes some venues in minor units (London = GBp pence, Tel Aviv = ILA
+ *  agorot, Johannesburg = ZAc cents): 100 minor = 1 major. Return the divisor and
+ *  the major-unit currency so price/52w fields can be normalized consistently.
+ *  Note: real pounds are "GBP" and pence are "GBp" (lowercase p) — the raw string
+ *  must be matched case-sensitively before any uppercasing. */
+function minorUnitAdjust(currency: string | undefined): { divisor: number; currency: string } {
+  if (currency === 'GBp' || currency === 'GBX') return { divisor: 100, currency: 'GBP' };
+  const cu = (currency ?? 'USD').toUpperCase();
+  if (cu === 'ILA') return { divisor: 100, currency: 'ILS' };
+  if (cu === 'ZAC') return { divisor: 100, currency: 'ZAR' };
+  return { divisor: 1, currency: currency ?? 'USD' };
+}
+
 type CrumbState = { crumb: string; cookies: string; expiry: number } | null;
 let _crumb: CrumbState = null;
 let _crumbPromise: Promise<{ crumb: string; cookies: string }> | null = null;
@@ -216,29 +301,36 @@ function rawNum(v: any): number | undefined {
 /* ─── Public API ──────────────────────────────────────────────────── */
 
 export async function fetchQuote(ticker: string): Promise<QuoteData> {
+  // Translate "EPA:RMS"-style sheet tickers to Yahoo symbols before any API call.
+  const ySym = resolveYahooSymbol(ticker);
   // v8 chart is the reliable base (no crumb required). v7 quote enriches when the
   // crumb flow works, but a crumb failure must never break adding/refreshing a ticker.
-  const meta = await yahooV8Chart(ticker);
+  const meta = await yahooV8Chart(ySym);
   if (!meta || meta.regularMarketPrice == null) {
-    throw new Error(`No market data for ticker "${ticker}"`);
+    throw new Error(`No market data for ticker "${ticker}" (Yahoo symbol "${ySym}")`);
   }
 
   let q: any = null;
-  try { q = await yahooV7Quote(ticker); } catch { /* enrichment optional */ }
+  try { q = await yahooV7Quote(ySym); } catch { /* enrichment optional */ }
 
-  const price: number = q?.regularMarketPrice ?? meta.regularMarketPrice ?? 0;
-  const prev: number  = q?.regularMarketPreviousClose ?? meta.previousClose ?? meta.chartPreviousClose ?? price;
+  const rawCurrency = q?.currency ?? meta.currency ?? 'USD';
+  const { divisor, currency } = minorUnitAdjust(rawCurrency);
+
+  const price: number = (q?.regularMarketPrice ?? meta.regularMarketPrice ?? 0) / divisor;
+  const prev: number  = (q?.regularMarketPreviousClose ?? meta.previousClose ?? meta.chartPreviousClose ?? (price * divisor)) / divisor;
   const change = prev !== 0 ? ((price - prev) / prev) * 100 : 0;
+  const high52 = q?.fiftyTwoWeekHigh ?? meta.fiftyTwoWeekHigh;
+  const low52  = q?.fiftyTwoWeekLow  ?? meta.fiftyTwoWeekLow;
   return {
     ticker,
     price,
     previousClose: prev,
     change1d: change,
-    marketCap:  q?.marketCap ?? meta.marketCap ?? undefined,
-    week52High: q?.fiftyTwoWeekHigh ?? meta.fiftyTwoWeekHigh ?? undefined,
-    week52Low:  q?.fiftyTwoWeekLow  ?? meta.fiftyTwoWeekLow  ?? undefined,
+    marketCap:  q?.marketCap ?? meta.marketCap ?? undefined, // already in major-unit currency
+    week52High: high52 != null ? high52 / divisor : undefined,
+    week52Low:  low52  != null ? low52  / divisor : undefined,
     volume:     q?.regularMarketVolume ?? undefined,
-    currency:   q?.currency ?? meta.currency ?? 'USD',
+    currency,
     name:       q?.longName ?? q?.shortName ?? meta.longName ?? meta.shortName ?? undefined,
     lastUpdated: new Date().toISOString(),
   };
@@ -280,10 +372,12 @@ export async function refreshAllCompanyPrices(): Promise<{ updated: number; erro
         `UPDATE companies SET
           current_price = $1, price_change_1d = $2,
           week_52_high = $3, week_52_low = $4,
-          market_cap = $5, last_price_update = NOW(), updated_at = NOW()
-         WHERE id = $6`,
+          market_cap = $5, currency = COALESCE($6, currency),
+          last_price_update = NOW(), updated_at = NOW()
+         WHERE id = $7`,
         [quote.price, quote.change1d, quote.week52High ?? null,
-         quote.week52Low ?? null, quote.marketCap ?? null, company.id as string]
+         quote.week52Low ?? null, quote.marketCap ?? null,
+         quote.currency || null, company.id as string]
       );
 
       await pool.query(
@@ -320,44 +414,51 @@ export async function refreshAllCompanyPrices(): Promise<{ updated: number; erro
 }
 
 export async function fetchFundamentals(ticker: string): Promise<FundamentalsData> {
+  const ySym = resolveYahooSymbol(ticker);
   // Reliable price base from v8 chart; never hard-fail for a valid ticker.
-  const meta = await yahooV8Chart(ticker);
+  const meta = await yahooV8Chart(ySym);
   if (!meta || meta.regularMarketPrice == null) {
-    throw new Error(`No market data for ticker "${ticker}"`);
+    throw new Error(`No market data for ticker "${ticker}" (Yahoo symbol "${ySym}")`);
   }
+
+  // Normalize minor units (London pence etc.) so price/52w are in the major unit.
+  const { divisor, currency } = minorUnitAdjust(meta.currency);
+  const norm = (v: any) => (v != null ? v / divisor : undefined);
 
   const data: FundamentalsData = {
     ticker,
     name:      meta.longName ?? meta.shortName ?? undefined,
-    price:     meta.regularMarketPrice ?? undefined,
-    currency:  meta.currency ?? undefined,
+    price:     norm(meta.regularMarketPrice),
+    currency,
     marketCap: meta.marketCap ?? undefined,
-    week52High: meta.fiftyTwoWeekHigh ?? undefined,
-    week52Low:  meta.fiftyTwoWeekLow  ?? undefined,
+    week52High: norm(meta.fiftyTwoWeekHigh),
+    week52Low:  norm(meta.fiftyTwoWeekLow),
   };
 
   // Enrich with v7 quote (fast, single object).
   let q: any = null;
-  try { q = await yahooV7Quote(ticker); } catch { /* optional */ }
+  try { q = await yahooV7Quote(ySym); } catch { /* optional */ }
   if (q) {
+    const adj = minorUnitAdjust(q.currency ?? meta.currency);
+    const qn = (v: any) => (v != null ? v / adj.divisor : undefined);
     data.name                = q.longName ?? q.shortName ?? data.name;
-    data.price               = q.regularMarketPrice ?? data.price;
-    data.currency            = q.currency ?? data.currency;
+    data.price               = qn(q.regularMarketPrice) ?? data.price;
+    data.currency            = adj.currency ?? data.currency;
     data.marketCap           = q.marketCap ?? data.marketCap;
     data.trailingPE          = rawNum(q.trailingPE) ?? data.trailingPE;
     data.forwardPE           = rawNum(q.forwardPE) ?? data.forwardPE;
     data.priceToBook         = rawNum(q.priceToBook) ?? data.priceToBook;
     data.enterpriseToEbitda  = rawNum(q.enterpriseToEbitda) ?? data.enterpriseToEbitda;
     data.enterpriseToRevenue = rawNum(q.enterpriseToRevenue) ?? data.enterpriseToRevenue;
-    data.week52High          = q.fiftyTwoWeekHigh ?? data.week52High;
-    data.week52Low           = q.fiftyTwoWeekLow ?? data.week52Low;
+    data.week52High          = qn(q.fiftyTwoWeekHigh) ?? data.week52High;
+    data.week52Low           = qn(q.fiftyTwoWeekLow) ?? data.week52Low;
     data.sector              = q.sector ?? data.sector;
     data.industry            = q.industry ?? data.industry;
   }
 
   // If fundamentals still missing (v7 blocked), try v10 quoteSummary.
   if (data.trailingPE == null || data.enterpriseToEbitda == null || data.sector == null) {
-    const s = await yahooV10Summary(ticker);
+    const s = await yahooV10Summary(ySym);
     if (s) {
       const sd = s.summaryDetail ?? {};
       const ks = s.defaultKeyStatistics ?? {};
