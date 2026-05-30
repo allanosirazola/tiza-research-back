@@ -42,6 +42,7 @@ export interface PortfolioPosition {
   current_price?: number;
   target_price?: number;
   shares?: number;          // "Cantidad" from the year sheet
+  sheet_value?: number;     // "Valor a día de hoy" from the sheet (weight fallback)
   market_value?: number;    // shares × current_price, converted to USD
   position_size?: number;   // weight % — computed from market_value / total
   pe_ratio?: number;
@@ -156,6 +157,7 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
       current_price: currentPrice,
       target_price: targetPrice,
       shares,
+      sheet_value: sheetValue,
       market_value: marketValue,
       position_size: r.position_size != null ? Number(r.position_size) : undefined,
       pe_ratio: r.pe_ratio != null ? Number(r.pe_ratio) : undefined,
