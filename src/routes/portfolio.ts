@@ -203,21 +203,8 @@ router.get('/model-sheets', async (req: Request, res: Response) => {
     if (!url || !url.includes('/pubhtml')) {
       return res.status(400).json({ error: 'Valid pubhtml URL required' });
     }
-    const response = await axios.get<string>(url, {
-      timeout: 15000,
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' },
-    });
-    const html = response.data as string;
-    const sheets: { name: string; gid: string }[] = [];
-    // Parse: href="#gid=12345">Sheet Name</a>
-    const regex = /href="#gid=(\d+)"[^>]*>\s*([^<]+?)\s*<\/a>/g;
-    let m: RegExpExecArray | null;
-    while ((m = regex.exec(html)) !== null) {
-      const name = m[2].trim();
-      if (name && !sheets.find(s => s.gid === m![1])) {
-        sheets.push({ gid: m[1], name });
-      }
-    }
+    // Reuse the shared tab parser (handles Google's real href="...?gid=N&single=true").
+    const sheets = await fetchSheetTabs(url);
     const pubKeyMatch = url.match(/\/d\/e\/([a-zA-Z0-9_-]+)/);
     const pubKey = pubKeyMatch ? pubKeyMatch[1] : '';
     return res.json({ sheets, pubKey });
