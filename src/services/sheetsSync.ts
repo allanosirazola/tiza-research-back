@@ -362,11 +362,22 @@ export async function syncFromSheets(
     );
     const entry_price = toNum(entryPriceRaw);
 
-    // Share count ("Cantidad") — drives current value & weight (computed live, not from sheet).
+    // Share count ("Cantidad") — drives current value & weight (computed live).
     const sharesRaw = pick(row, normHeaders,
-      'cantidad', 'acciones', 'shares', 'titulos', 'num_acciones', 'numero_de_acciones', 'qty', 'quantity'
+      'cantidad', 'cant', 'acciones', 'accion', 'num_acciones', 'numero_acciones',
+      'numero_de_acciones', 'n_acciones', 'no_acciones', 'no_de_acciones', 'nacciones',
+      'titulos', 'participaciones', 'unidades', 'shares', 'share', 'qty', 'quantity'
     );
     const shares = toNum(sharesRaw);
+
+    // Current position value from the sheet ("Valor a día de hoy"), in the listing
+    // currency — used as a weight fallback when the share count is missing. Prefer
+    // the non-USD column so it stays consistent with the position's currency.
+    const valueRaw = pick(row, normHeaders,
+      'valor_a_dia_de_hoy', 'valor_dia_de_hoy', 'valor_hoy', 'valor_actual',
+      'valor_de_mercado', 'valor_mercado', 'valor_posicion', 'current_value', 'market_value'
+    );
+    const sheet_value = toNum(valueRaw);
 
     // Optional explicit weight column (rarely present — weight is normally computed).
     const posRaw = pick(row, normHeaders,
@@ -392,10 +403,11 @@ export async function syncFromSheets(
             sector       = COALESCE(NULLIF($3,''), sector),
             position_size= $4,
             shares       = $5,
+            sheet_value  = $6,
             status       = 'active',
             updated_at   = NOW()
-           WHERE id = $6`,
-          [ticker || null, entry_price, sector || null, position_size, shares, existing.rows[0].id]
+           WHERE id = $7`,
+          [ticker || null, entry_price, sector || null, position_size, shares, sheet_value, existing.rows[0].id]
         );
         seenIds.push(existing.rows[0].id);
         result.updated++;
@@ -404,9 +416,9 @@ export async function syncFromSheets(
         // The price refresh that runs right after sync sets the real listing
         // currency from Yahoo, which the portfolio FX conversion then relies on.
         const ins = await pool.query(
-          `INSERT INTO companies (name, ticker, sector, entry_price, position_size, shares, status)
-           VALUES ($1, $2, $3, $4, $5, $6, 'active') RETURNING id`,
-          [name, ticker || null, sector || null, entry_price, position_size, shares]
+          `INSERT INTO companies (name, ticker, sector, entry_price, position_size, shares, sheet_value, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'active') RETURNING id`,
+          [name, ticker || null, sector || null, entry_price, position_size, shares, sheet_value]
         );
         seenIds.push(ins.rows[0].id);
         result.inserted++;

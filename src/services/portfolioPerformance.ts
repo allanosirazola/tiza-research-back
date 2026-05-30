@@ -108,7 +108,7 @@ function isCashPosition(pos: PortfolioPosition): boolean {
 export async function getPortfolioSummary(): Promise<PortfolioSummary> {
   const result = await pool.query(
     `SELECT id, name, ticker, sector, currency, entry_price, entry_date,
-            current_price, target_price, position_size, shares,
+            current_price, target_price, position_size, shares, sheet_value,
             model_return, model_cagr, pe_ratio, ev_ebitda, conviction, status
      FROM companies
      WHERE status = 'active'
@@ -123,11 +123,16 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
     const targetPrice = r.target_price != null ? Number(r.target_price) : undefined;
     const entryDate = r.entry_date ? String(r.entry_date).slice(0, 10) : undefined;
     const shares = r.shares != null ? Number(r.shares) : undefined;
+    const sheetValue = r.sheet_value != null ? Number(r.sheet_value) : undefined;
 
     // Market value in USD = shares × current price (converted from listing currency).
+    // Fall back to the sheet's "Valor a día de hoy" when the share count is absent,
+    // so weight still computes for positions tracked only by value.
     let marketValue: number | undefined;
     if (shares != null && currentPrice != null) {
       marketValue = toUsd(shares * currentPrice, r.currency, fx);
+    } else if (sheetValue != null) {
+      marketValue = toUsd(sheetValue, r.currency, fx);
     }
 
     let upside: number | undefined;

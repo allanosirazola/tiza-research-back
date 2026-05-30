@@ -139,6 +139,9 @@ export async function initDb(): Promise<void> {
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS thesis_content TEXT;
     -- Portfolio (2026 sheet): share count drives current value & weight
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS shares NUMERIC;
+    -- Current position value from the sheet ("Valor a día de hoy"); weight fallback
+    -- when share count is absent.
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS sheet_value NUMERIC;
     -- Return / CAGR sourced from the valuation-by-cases model sheet (user-chosen cells)
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_return NUMERIC;
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_cagr NUMERIC;
