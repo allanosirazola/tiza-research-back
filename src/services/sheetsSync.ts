@@ -152,6 +152,23 @@ function parseCsvRows(text: string): string[][] {
   return rows;
 }
 
+/** Convert an A1 reference ("P26", "AA3") to zero-based [row, col]. */
+function a1ToRowCol(ref: string): { row: number; col: number } | null {
+  const m = ref.trim().toUpperCase().match(/^([A-Z]+)(\d+)$/);
+  if (!m) return null;
+  let col = 0;
+  for (const ch of m[1]) col = col * 26 + (ch.charCodeAt(0) - 64);
+  return { row: parseInt(m[2], 10) - 1, col: col - 1 };
+}
+
+/** Read a numeric value at an A1 cell from a raw CSV grid (handles %, €, EU decimals). */
+function cellNum(grid: string[][], ref: string): number | null {
+  const rc = a1ToRowCol(ref);
+  if (!rc) return null;
+  const raw = grid[rc.row]?.[rc.col];
+  return raw != null ? toNum(raw) : null;
+}
+
 function parseCsv(text: string): { rows: Record<string, string>[]; rawHeaders: string[]; normHeaders: string[] } {
   // Tokenize respecting quoted newlines so multiline cells (e.g. Constellation's
   // "FRA:\nW9C" ticker) don't shift the columns of their row.
@@ -297,11 +314,12 @@ export interface SyncResult {
   deactivated?: number; // positions moved out of the portfolio (no longer in sheet)
   pricesUpdated?: number; // companies whose live price was refreshed during sync
   purged?: number;      // junk rows (summary/number/fragment) removed from the DB
+  totalPnl?: number | null; // portfolio P&L read from the sheet's pnl cell (e.g. P26)
 }
 
 export async function syncFromSheets(
   sheetUrl: string,
-  opts: { tab?: string; gid?: string } = {},
+  opts: { tab?: string; gid?: string; pnlCell?: string } = {},
 ): Promise<SyncResult> {
   // Portfolio positions live on the current-year tab (e.g. "2026"), not the first
   // sheet. Prefer an explicit numeric gid (manual selector); otherwise resolve by
@@ -360,6 +378,15 @@ export async function syncFromSheets(
 
   const { rows, rawHeaders, normHeaders } = parseCsv(csvText);
   result.headers = rawHeaders;
+
+  // Read the portfolio total P&L from a fixed cell in the sheet (e.g. "P26" on the
+  // 2026 tab) — the sheet's own authoritative W/L, including dividends. We re-parse
+  // the full grid (not the trimmed positions table) so absolute A1 refs resolve.
+  if (opts.pnlCell) {
+    const fullGrid = parseCsvRows(csvText);
+    result.totalPnl = cellNum(fullGrid, opts.pnlCell);
+    console.log(`[sync] P&L cell ${opts.pnlCell} =`, result.totalPnl);
+  }
 
   console.log('[sync] Raw headers:', rawHeaders.join(' | '));
   console.log('[sync] Norm headers:', normHeaders.join(' | '));
@@ -437,6 +464,20 @@ export async function syncFromSheets(
     );
     const position_size = toNum(posRaw);
 
+    // Position P&L straight from the sheet — "Retorno / Perdida" (col I) already
+    // includes dividends, and "R/P %" (col J) is its percentage. Dividends (col H)
+    // are kept separately for display.
+    const pnl_value = toNum(pick(row, normHeaders,
+      'retorno__perdida', 'retorno_perdida', 'retorno_perdida_usd', 'retorno',
+      'ganancia_perdida', 'pnl', 'win_loss', 'resultado'
+    ));
+    const pnl_pct = toNum(pick(row, normHeaders,
+      'rp_', 'rp', 'r_p', 'retorno_perdida_pct', 'rp_pct', 'porcentaje_rp'
+    ));
+    const dividends = toNum(pick(row, normHeaders,
+      'dividendos', 'dividends', 'dividendo', 'dividend'
+    ));
+
     try {
       const existing = await pool.query(
         `SELECT id FROM companies
@@ -456,10 +497,14 @@ export async function syncFromSheets(
             position_size= $4,
             shares       = $5,
             sheet_value  = $6,
+            pnl_value    = $7,
+            pnl_pct      = $8,
+            dividends    = $9,
             status       = 'active',
             updated_at   = NOW()
-           WHERE id = $7`,
-          [ticker || null, entry_price, sector || null, position_size, shares, sheet_value, existing.rows[0].id]
+           WHERE id = $10`,
+          [ticker || null, entry_price, sector || null, position_size, shares, sheet_value,
+           pnl_value, pnl_pct, dividends, existing.rows[0].id]
         );
         seenIds.push(existing.rows[0].id);
         result.updated++;
@@ -468,9 +513,9 @@ export async function syncFromSheets(
         // The price refresh that runs right after sync sets the real listing
         // currency from Yahoo, which the portfolio FX conversion then relies on.
         const ins = await pool.query(
-          `INSERT INTO companies (name, ticker, sector, entry_price, position_size, shares, sheet_value, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'active') RETURNING id`,
-          [name, ticker || null, sector || null, entry_price, position_size, shares, sheet_value]
+          `INSERT INTO companies (name, ticker, sector, entry_price, position_size, shares, sheet_value, pnl_value, pnl_pct, dividends, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active') RETURNING id`,
+          [name, ticker || null, sector || null, entry_price, position_size, shares, sheet_value, pnl_value, pnl_pct, dividends]
         );
         seenIds.push(ins.rows[0].id);
         result.inserted++;
@@ -521,6 +566,22 @@ export async function syncFromSheets(
       }
     } catch (e: any) {
       result.errors.push(`No se pudo limpiar basura: ${e?.message ?? e}`);
+    }
+  }
+
+  // Persist the sheet's authoritative total P&L into the current-year history row so
+  // the Cartera header shows the right number instead of a stale manual estimate.
+  if (result.totalPnl != null) {
+    try {
+      const year = new Date().getFullYear();
+      await pool.query(
+        `INSERT INTO portfolio_performance_history (period, period_type, win_lose_usd, notes)
+         VALUES ($1, 'annual', $2, 'Sincronizado desde la hoja')
+         ON CONFLICT (period, period_type) DO UPDATE SET win_lose_usd = EXCLUDED.win_lose_usd`,
+        [`${year} YTD`, result.totalPnl]
+      );
+    } catch (e: any) {
+      result.errors.push(`No se pudo guardar el P&L total: ${e?.message ?? e}`);
     }
   }
 
