@@ -120,8 +120,42 @@ function parseRow(line: string): string[] {
   return cells;
 }
 
+/**
+ * Tokenize a full CSV into rows of cells, respecting quoted fields that contain
+ * embedded newlines. Splitting on "\n" first (as parseRow-per-line does) breaks a
+ * cell like Constellation's ticker "FRA:\nW9C", desync-ing every following column.
+ * Newlines inside quotes are flattened to a space so the cell stays a single token.
+ */
+function parseCsvRows(text: string): string[][] {
+  const rows: string[][] = [];
+  let cells: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  const t = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (ch === '"') {
+      if (inQuotes && t[i + 1] === '"') { current += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      cells.push(current); current = '';
+    } else if (ch === '\n' && !inQuotes) {
+      cells.push(current); rows.push(cells); cells = []; current = '';
+    } else if (ch === '\n' && inQuotes) {
+      current += ' '; // embedded newline inside a quoted cell → keep one cell
+    } else {
+      current += ch;
+    }
+  }
+  // Flush the final cell/row if the file doesn't end with a newline.
+  if (current !== '' || cells.length > 0) { cells.push(current); rows.push(cells); }
+  return rows;
+}
+
 function parseCsv(text: string): { rows: Record<string, string>[]; rawHeaders: string[]; normHeaders: string[] } {
-  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  // Tokenize respecting quoted newlines so multiline cells (e.g. Constellation's
+  // "FRA:\nW9C" ticker) don't shift the columns of their row.
+  const grid = parseCsvRows(text);
 
   // Anchor on the POSITIONS header ("Producto | Cantidad | Sector"). The sheet has
   // summary blocks plus a second SALES table whose header also starts with
@@ -131,8 +165,8 @@ function parseCsv(text: string): { rows: Record<string, string>[]; rawHeaders: s
   // both "cantidad" and "sector".
   let headerLine = -1;
   let headerScore = -1;
-  for (let i = 0; i < Math.min(60, lines.length); i++) {
-    const norm = parseRow(lines[i]).map(normalize);
+  for (let i = 0; i < Math.min(60, grid.length); i++) {
+    const norm = grid[i].map(normalize);
     const isSales = norm.some(c => c.includes('valor_venta') || c.includes('valor_salvado'));
     if (isSales) continue;
     const hasProducto = norm.some(c => c.includes('producto'));
@@ -148,18 +182,17 @@ function parseCsv(text: string): { rows: Record<string, string>[]; rawHeaders: s
   // Fallback: first row that looks like a header (≥2 non-empty cells).
   if (headerLine === -1) {
     headerLine = 0;
-    for (let i = 0; i < Math.min(5, lines.length); i++) {
-      const cells = parseRow(lines[i]);
-      if (cells.filter(c => c.trim()).length >= 2) { headerLine = i; break; }
+    for (let i = 0; i < Math.min(5, grid.length); i++) {
+      if (grid[i].filter(c => c.trim()).length >= 2) { headerLine = i; break; }
     }
   }
 
-  const rawHeaders = parseRow(lines[headerLine]).map(h => h.trim());
+  const rawHeaders = (grid[headerLine] ?? []).map(h => h.trim());
   const normHeaders = rawHeaders.map(normalize);
 
   const rows: Record<string, string>[] = [];
-  for (let i = headerLine + 1; i < lines.length; i++) {
-    const cells = parseRow(lines[i]);
+  for (let i = headerLine + 1; i < grid.length; i++) {
+    const cells = grid[i];
     if (cells.every(c => !c.trim())) continue;
 
     // Stop at the next table. The sheet repeats a "Producto | Ticker | … | Valor
@@ -357,21 +390,16 @@ export async function syncFromSheets(
       if (firstKey) name = row[firstKey];
     }
 
-    const ticker = pick(row, normHeaders, 'ticker', 'symbol', 'simbolo', 'isin');
+    // Collapse internal whitespace: a multiline ticker cell ("FRA:\nW9C") is
+    // flattened to "FRA: W9C" by the CSV tokenizer — normalize back to "FRA:W9C".
+    const ticker = pick(row, normHeaders, 'ticker', 'symbol', 'simbolo', 'isin')
+      .replace(/\s+/g, '');
     const sector = pick(row, normHeaders, 'sector', 'industria', 'industry', 'segmento');
 
     // Only import genuine holdings. This rejects the summary/accounting rows,
     // stray numbers and name-only fragments that were polluting the watchlist.
     if (!isRealHolding(name, ticker, sector)) { result.skipped++; continue; }
 
-    // Entry price = "Valor inicio año(USD)" column on the 2026 tab.
-    // "Valor inicio año(USD)" normalizes to "valor_inicio_anousd"; substring match
-    // on "valor_inicio" / "inicio_ano" keeps it robust to minor header variations.
-    const entryPriceRaw = pick(row, normHeaders,
-      'valor_inicio_anousd', 'valor_inicio_ano', 'valor_inicio', 'inicio_ano',
-      'entry_price', 'precio_entrada', 'precio_de_entrada',
-      'coste', 'coste_medio', 'precio_compra', 'entrada'
-    );
     // Share count ("Cantidad") — drives current value & weight (computed live).
     const sharesRaw = pick(row, normHeaders,
       'cantidad', 'cant', 'acciones', 'accion', 'num_acciones', 'numero_acciones',
@@ -380,23 +408,28 @@ export async function syncFromSheets(
     );
     const shares = toNum(sharesRaw);
 
-    // "Valor inicio año(USD)" is the TOTAL start-of-year value of the position
-    // (shares × price), not a per-share price. Convert to a per-share entry price by
-    // dividing by the share count so the "Entrada" column and any return math are
-    // correct. If shares is missing, keep the raw value as a best-effort fallback.
-    let entry_price = toNum(entryPriceRaw);
-    if (entry_price != null && shares != null && shares > 0) {
-      entry_price = entry_price / shares;
+    // Per-share entry price = "Valor inicio año" (column D), already in the listing
+    // currency, so it's consistent with Yahoo's per-share current price. Try the
+    // per-share column first; only if it's missing fall back to the USD TOTAL column
+    // ("Valor inicio año(USD)") divided by the share count.
+    let entry_price = toNum(pick(row, normHeaders,
+      'valor_inicio_ano', 'valor_inicio_año', 'valor_inicio',
+      'precio_inicio_ano', 'precio_entrada', 'precio_de_entrada', 'precio_compra',
+      'coste', 'coste_medio', 'entrada'
+    ));
+    if (entry_price == null) {
+      const totalStart = toNum(pick(row, normHeaders, 'valor_inicio_anousd', 'valor_inicio_ano_usd'));
+      if (totalStart != null && shares != null && shares > 0) entry_price = totalStart / shares;
     }
 
-    // Current position value from the sheet ("Valor a día de hoy"), in the listing
-    // currency — used as a weight fallback when the share count is missing. Prefer
-    // the non-USD column so it stays consistent with the position's currency.
-    const valueRaw = pick(row, normHeaders,
-      'valor_a_dia_de_hoy', 'valor_dia_de_hoy', 'valor_hoy', 'valor_actual',
+    // Current position value (total) from the sheet — used as a weight fallback when
+    // the share count is missing. "Valor actual(USD)" (column G) is the USD total;
+    // accept several header spellings.
+    const sheet_value = toNum(pick(row, normHeaders,
+      'valor_actualusd', 'valor_actual_usd', 'valor_actual',
+      'valor_a_dia_de_hoy', 'valor_dia_de_hoy', 'valor_hoy',
       'valor_de_mercado', 'valor_mercado', 'valor_posicion', 'current_value', 'market_value'
-    );
-    const sheet_value = toNum(valueRaw);
+    ));
 
     // Optional explicit weight column (rarely present — weight is normally computed).
     const posRaw = pick(row, normHeaders,
