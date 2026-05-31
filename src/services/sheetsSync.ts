@@ -372,8 +372,6 @@ export async function syncFromSheets(
       'entry_price', 'precio_entrada', 'precio_de_entrada',
       'coste', 'coste_medio', 'precio_compra', 'entrada'
     );
-    const entry_price = toNum(entryPriceRaw);
-
     // Share count ("Cantidad") — drives current value & weight (computed live).
     const sharesRaw = pick(row, normHeaders,
       'cantidad', 'cant', 'acciones', 'accion', 'num_acciones', 'numero_acciones',
@@ -381,6 +379,15 @@ export async function syncFromSheets(
       'titulos', 'participaciones', 'unidades', 'shares', 'share', 'qty', 'quantity'
     );
     const shares = toNum(sharesRaw);
+
+    // "Valor inicio año(USD)" is the TOTAL start-of-year value of the position
+    // (shares × price), not a per-share price. Convert to a per-share entry price by
+    // dividing by the share count so the "Entrada" column and any return math are
+    // correct. If shares is missing, keep the raw value as a best-effort fallback.
+    let entry_price = toNum(entryPriceRaw);
+    if (entry_price != null && shares != null && shares > 0) {
+      entry_price = entry_price / shares;
+    }
 
     // Current position value from the sheet ("Valor a día de hoy"), in the listing
     // currency — used as a weight fallback when the share count is missing. Prefer
