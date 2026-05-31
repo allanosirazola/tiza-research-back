@@ -198,7 +198,9 @@ router.post('/sync-sheets', async (req: Request, res: Response) => {
     const url: string = req.body?.url ?? DEFAULT_SHEETS_URL;
     const tab: string | undefined = req.body?.tab;
     const gid: string | undefined = req.body?.gid;
-    const result = await syncFromSheets(url, { tab, gid });
+    // P&L cell defaults to "P26" (2026 tab's total Win/Loss incl. dividends).
+    const pnlCell: string | undefined = req.body?.pnlCell ?? 'P26';
+    const result = await syncFromSheets(url, { tab, gid, pnlCell });
     return res.json({
       updated: result.updated + result.inserted,
       errors: result.errors,

@@ -142,6 +142,11 @@ export async function initDb(): Promise<void> {
     -- Current position value from the sheet ("Valor a día de hoy"); weight fallback
     -- when share count is absent.
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS sheet_value NUMERIC;
+    -- Realized+unrealized P&L for the position, including dividends, straight from the
+    -- year sheet ("Retorno / Perdida" and "R/P %" columns).
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS pnl_value NUMERIC;
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS pnl_pct NUMERIC;
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS dividends NUMERIC;
     -- Return / CAGR sourced from the valuation-by-cases model sheet (user-chosen cells)
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_return NUMERIC;
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_cagr NUMERIC;

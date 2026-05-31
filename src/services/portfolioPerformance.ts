@@ -28,6 +28,8 @@ export interface PortfolioSummary {
   weighted_upside: number | null;
   weighted_cagr: number | null;
   ytd_portfolio?: number;          // sum of ytd_contributions (pp)
+  total_pnl_abs?: number | null;   // Σ position P&L incl. dividends (USD), from sheet
+  total_pnl_pct?: number | null;   // total P&L as % of cost basis
   positions: PortfolioPosition[];
 }
 
@@ -54,6 +56,9 @@ export interface PortfolioPosition {
   has_model?: boolean;      // whether return/CAGR come from a parsed model
   ytd_return?: number;      // YTD return %
   ytd_contribution?: number; // YTD contribution in pp
+  pnl_value?: number;       // position W/L incl. dividends, from the sheet (USD)
+  pnl_pct?: number;         // position W/L %, from the sheet
+  dividends?: number;       // dividends received, from the sheet
   status: string;
   is_cash?: boolean;
 }
@@ -110,6 +115,7 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
   const result = await pool.query(
     `SELECT id, name, ticker, sector, currency, entry_price, entry_date,
             current_price, target_price, position_size, shares, sheet_value,
+            pnl_value, pnl_pct, dividends,
             model_return, model_cagr, pe_ratio, ev_ebitda, conviction, status
      FROM companies
      WHERE status = 'active'
@@ -164,6 +170,9 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
       ev_ebitda: r.ev_ebitda != null ? Number(r.ev_ebitda) : undefined,
       conviction: r.conviction,
       upside,
+      pnl_value: r.pnl_value != null ? Number(r.pnl_value) : undefined,
+      pnl_pct:   r.pnl_pct   != null ? Number(r.pnl_pct)   : undefined,
+      dividends: r.dividends != null ? Number(r.dividends) : undefined,
       total_return: modelReturn,
       cagr: modelCagr,
       has_model: modelReturn != null || modelCagr != null,
@@ -251,6 +260,22 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
     ? ytdContributions.reduce((a, b) => a + b, 0)
     : undefined;
 
+  // Total P&L (incl. dividends) straight from the sheet's "Retorno / Perdida" column,
+  // converted to USD per position. This is the authoritative W/L the user sees in the
+  // sheet, not a price-derived estimate. Percentage = P&L / cost basis, where cost
+  // basis = current market value − P&L.
+  const pnlItems = positions.filter(p => p.pnl_value != null);
+  let totalPnlAbs: number | null = null;
+  let totalPnlPct: number | null = null;
+  if (pnlItems.length) {
+    totalPnlAbs = pnlItems.reduce((s, p) => s + toUsd(p.pnl_value!, p.currency, fx), 0);
+    const costBasis = pnlItems.reduce((s, p) => {
+      const mv = p.market_value ?? toUsd((p.sheet_value ?? 0), p.currency, fx);
+      return s + (mv - toUsd(p.pnl_value!, p.currency, fx));
+    }, 0);
+    if (costBasis > 0) totalPnlPct = (totalPnlAbs / costBasis) * 100;
+  }
+
   return {
     total_invested: null,
     total_current_value: null,
@@ -261,6 +286,8 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
     weighted_upside: weightedUpside,
     weighted_cagr: weightedCagr,
     ytd_portfolio: ytdPortfolio,
+    total_pnl_abs: totalPnlAbs,
+    total_pnl_pct: totalPnlPct,
     positions,
   };
 }
