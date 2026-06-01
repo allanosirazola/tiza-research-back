@@ -6,8 +6,23 @@ import {
   invalidateCache,
 } from '../notionClient';
 import { scrapePage } from '../services/pageScraper';
+import { scrapeNotionThesis } from '../services/notionPublic';
 
 const router = Router();
+
+// GET /api/notion/thesis?url=...  — scrape a PUBLIC notion.site page via loadPageChunk
+// (no integration token needed) and return it as collapsible sections.
+router.get('/thesis', async (req: Request, res: Response) => {
+  try {
+    const url = req.query.url as string;
+    if (!url) return res.status(400).json({ error: 'URL is required' });
+    const thesis = await scrapeNotionThesis(url);
+    return res.json(thesis);
+  } catch (err: any) {
+    console.error('[notion/thesis]', err?.message);
+    return res.status(500).json({ error: err?.message ?? 'No se pudo cargar la tesis de Notion' });
+  }
+});
 
 // GET /api/notion/scrape?url=...  — fetch a public web/notion.site page server-side
 // (notion.site forbids iframing) and return sanitized HTML to render inline.
