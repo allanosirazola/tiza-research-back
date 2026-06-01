@@ -7,7 +7,7 @@ import {
   invalidateCache,
 } from '../notionClient';
 import { parseModelFromUrl } from '../services/modelParser';
-import { fetchModelCases, resolveCasesGid } from '../services/modelCases';
+import { fetchModelCases, resolveCasesGid, listModelTabs, pickCasesGid } from '../services/modelCases';
 
 const router = Router();
 
@@ -227,6 +227,22 @@ router.post('/:id/parse-model', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[parse-model]', err);
     return res.status(500).json({ error: err.message ?? 'Failed to parse model' });
+  }
+});
+
+// GET /api/companies/:id/model-tabs — list the model's sheet tabs (debug detection).
+router.get('/:id/model-tabs', async (req: Request, res: Response) => {
+  try {
+    const c = await pool.query('SELECT model_url FROM companies WHERE id = $1', [req.params.id]);
+    if (c.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
+    const company = c.rows[0];
+    if (!company.model_url) return res.status(400).json({ error: 'No model URL set for this company' });
+    const tabs = await listModelTabs(company.model_url);
+    const casesGid = pickCasesGid(tabs);
+    return res.json({ model_url: company.model_url, tabs, casesGid });
+  } catch (err: any) {
+    console.error('[model-tabs]', err);
+    return res.status(500).json({ error: err.message ?? 'Failed to list model tabs' });
   }
 });
 
