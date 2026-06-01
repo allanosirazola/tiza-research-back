@@ -20,18 +20,28 @@ export interface ModelCasesData {
   cagrValue: number | null;
 }
 
-function extractPubKey(url: string): string {
-  const m = url.match(/\/d\/e\/([a-zA-Z0-9_-]+)/);
-  if (!m) throw new Error('Invalid published Google Sheets URL (expected /d/e/PUBKEY)');
-  return m[1];
+// A model URL is either a PUBLISHED sheet (/d/e/PUBKEY/…) or a regular shared sheet
+// (/spreadsheets/d/ID/edit). Track which so we can build the right CSV/pubhtml URLs.
+interface SheetRef { kind: 'published' | 'regular'; key: string; }
+
+function extractPubKey(url: string): SheetRef {
+  const pub = url.match(/\/d\/e\/([a-zA-Z0-9_-]+)/);
+  if (pub) return { kind: 'published', key: pub[1] };
+  const reg = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  if (reg) return { kind: 'regular', key: reg[1] };
+  throw new Error('URL de Google Sheets no válida (esperaba /d/e/PUBKEY o /spreadsheets/d/ID)');
 }
 
-function csvUrl(pubKey: string, gid: string): string {
-  return `https://docs.google.com/spreadsheets/d/e/${pubKey}/pub?gid=${gid}&single=true&output=csv`;
+function csvUrl(ref: SheetRef, gid: string): string {
+  return ref.kind === 'published'
+    ? `https://docs.google.com/spreadsheets/d/e/${ref.key}/pub?gid=${gid}&single=true&output=csv`
+    : `https://docs.google.com/spreadsheets/d/${ref.key}/export?format=csv&gid=${gid}`;
 }
 
-function pubhtmlUrl(pubKey: string): string {
-  return `https://docs.google.com/spreadsheets/d/e/${pubKey}/pubhtml`;
+function pubhtmlUrl(ref: SheetRef): string {
+  return ref.kind === 'published'
+    ? `https://docs.google.com/spreadsheets/d/e/${ref.key}/pubhtml`
+    : `https://docs.google.com/spreadsheets/d/${ref.key}/pubhtml`;
 }
 
 function parseRow(line: string): string[] {
@@ -76,15 +86,15 @@ export function cellNum(grid: string[][], ref: string): number | null {
   return isNaN(n) ? null : n;
 }
 
-async function fetchTabs(pubKey: string): Promise<{ name: string; gid: string }[]> {
+async function fetchTabs(ref: SheetRef): Promise<{ name: string; gid: string }[]> {
   // Reuse the robust multi-strategy tab parser from sheetsSync (the single-regex
   // version here missed tabs like "4.1 Valoración por casos" depending on markup).
   try {
-    const tabs = await fetchSheetTabs(pubhtmlUrl(pubKey));
+    const tabs = await fetchSheetTabs(pubhtmlUrl(ref));
     if (tabs.length) return tabs;
   } catch { /* fall through to the local parser */ }
 
-  const res = await axios.get<string>(pubhtmlUrl(pubKey), {
+  const res = await axios.get<string>(pubhtmlUrl(ref), {
     timeout: 20000,
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' },
   });
@@ -98,18 +108,29 @@ async function fetchTabs(pubKey: string): Promise<{ name: string; gid: string }[
   return tabs;
 }
 
+const normName = (s: string) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+/** Pick the "valoración por casos" tab from a tab list (e.g. "4.1 Valoración por casos"). */
+export function pickCasesGid(tabs: { name: string; gid: string }[]): string | undefined {
+  // Match on the phrase, "por casos", the "4.1" prefix, or just "casos" — most → least specific.
+  const byCases   = tabs.find(t => normName(t.name).includes('valoracion por casos'));
+  const byPartial = tabs.find(t => normName(t.name).includes('por casos'));
+  const byNum     = tabs.find(t => /(^|\s)4\.1(\s|$|\b)/.test(t.name.trim()));
+  const byCasos   = tabs.find(t => normName(t.name).includes('casos'));
+  return (byCases ?? byPartial ?? byNum ?? byCasos)?.gid;
+}
+
 /** Find the gid of the "valoración por casos" tab (e.g. "4.1 Valoración por casos"). */
 export async function resolveCasesGid(modelUrl: string): Promise<string | undefined> {
   const pubKey = extractPubKey(modelUrl);
   let tabs: { name: string; gid: string }[] = [];
   try { tabs = await fetchTabs(pubKey); } catch { return undefined; }
-  const norm = (s: string) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-  // "4.1 Valoración por casos" → match on the phrase, the "4.1" prefix, or just "casos".
-  const byCases = tabs.find(t => norm(t.name).includes('valoracion por casos'));
-  const byPartial = tabs.find(t => norm(t.name).includes('por casos') || norm(t.name).includes('valoracion_por_casos'));
-  const byNum = tabs.find(t => /\b4\.1\b/.test(t.name) || /^4\.1/.test(t.name.trim()));
-  const byCasos = tabs.find(t => norm(t.name).includes('casos'));
-  return (byCases ?? byPartial ?? byNum ?? byCasos)?.gid;
+  return pickCasesGid(tabs);
+}
+
+/** Public: list a model's tabs (for the UI selector / debugging detection). */
+export async function listModelTabs(modelUrl: string): Promise<{ name: string; gid: string }[]> {
+  return fetchTabs(extractPubKey(modelUrl));
 }
 
 export async function fetchModelCases(
@@ -117,8 +138,15 @@ export async function fetchModelCases(
   opts: { gid?: string; returnCell?: string; cagrCell?: string } = {}
 ): Promise<ModelCasesData> {
   const pubKey = extractPubKey(modelUrl);
-  const gid = opts.gid ?? await resolveCasesGid(modelUrl);
-  if (!gid) throw new Error('No se encontró la pestaña de "valoración por casos" en el modelo');
+  let gid = opts.gid;
+  if (!gid) {
+    const tabs = await fetchTabs(pubKey).catch(() => [] as { name: string; gid: string }[]);
+    gid = pickCasesGid(tabs);
+    if (!gid) {
+      const list = tabs.length ? tabs.map(t => t.name).join(' | ') : '(ninguna detectada)';
+      throw new Error(`No se encontró la pestaña de "valoración por casos". Pestañas detectadas: ${list}`);
+    }
+  }
 
   const returnCell = (opts.returnCell ?? 'H10').toUpperCase();
   const cagrCell = (opts.cagrCell ?? 'H11').toUpperCase();
