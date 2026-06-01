@@ -169,6 +169,28 @@ function cellNum(grid: string[][], ref: string): number | null {
   return raw != null ? toNum(raw) : null;
 }
 
+/**
+ * Find a cell whose text matches one of `labels` (normalized, accent-insensitive) and
+ * return the first numeric value to its right on the same row. Used for summary cells
+ * like "Win/Lost ROA" whose exact A1 position can shift between sheets.
+ */
+function findLabeledValue(grid: string[][], labels: string[]): number | null {
+  const norm = (s: string) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
+  const wanted = labels.map(norm);
+  for (const row of grid) {
+    for (let c = 0; c < row.length; c++) {
+      const cell = norm(row[c] ?? '');
+      if (cell && wanted.some(w => cell === w || cell.includes(w))) {
+        for (let k = c + 1; k < row.length; k++) {
+          const v = toNum(row[k]);
+          if (v != null) return v;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function parseCsv(text: string): { rows: Record<string, string>[]; rawHeaders: string[]; normHeaders: string[] } {
   // Tokenize respecting quoted newlines so multiline cells (e.g. Constellation's
   // "FRA:\nW9C" ticker) don't shift the columns of their row.
@@ -379,13 +401,17 @@ export async function syncFromSheets(
   const { rows, rawHeaders, normHeaders } = parseCsv(csvText);
   result.headers = rawHeaders;
 
-  // Read the portfolio total P&L from a fixed cell in the sheet (e.g. "P26" on the
-  // 2026 tab) — the sheet's own authoritative W/L, including dividends. We re-parse
-  // the full grid (not the trimmed positions table) so absolute A1 refs resolve.
-  if (opts.pnlCell) {
+  // Read the portfolio total P&L. Prefer searching for the "Win/Lost ROA" label and
+  // taking the value to its right (robust to row/column shifts); fall back to a fixed
+  // cell ref (e.g. P26) if the label isn't found. This is the sheet's own
+  // authoritative W/L. We use the full grid, not the trimmed positions table.
+  {
     const fullGrid = parseCsvRows(csvText);
-    result.totalPnl = cellNum(fullGrid, opts.pnlCell);
-    console.log(`[sync] P&L cell ${opts.pnlCell} =`, result.totalPnl);
+    result.totalPnl = findLabeledValue(fullGrid, ['win/lost roa', 'win/loss roa', 'win lost roa', 'winlost', 'w/l roa']);
+    if (result.totalPnl == null && opts.pnlCell) {
+      result.totalPnl = cellNum(fullGrid, opts.pnlCell);
+    }
+    console.log(`[sync] Total P&L (Win/Lost ROA / ${opts.pnlCell ?? '—'}) =`, result.totalPnl);
   }
 
   console.log('[sync] Raw headers:', rawHeaders.join(' | '));
