@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { fetchSheetTabs } from './sheetsSync';
 
 /**
  * Reads the "valoración por casos" sheet of a published Google Sheets model:
@@ -76,12 +77,19 @@ export function cellNum(grid: string[][], ref: string): number | null {
 }
 
 async function fetchTabs(pubKey: string): Promise<{ name: string; gid: string }[]> {
+  // Reuse the robust multi-strategy tab parser from sheetsSync (the single-regex
+  // version here missed tabs like "4.1 Valoración por casos" depending on markup).
+  try {
+    const tabs = await fetchSheetTabs(pubhtmlUrl(pubKey));
+    if (tabs.length) return tabs;
+  } catch { /* fall through to the local parser */ }
+
   const res = await axios.get<string>(pubhtmlUrl(pubKey), {
     timeout: 20000,
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' },
   });
   const tabs: { name: string; gid: string }[] = [];
-  const regex = /href="#gid=(\d+)"[^>]*>\s*([^<]+?)\s*<\/a>/g;
+  const regex = /href="[^"]*#?gid=(\d+)"[^>]*>\s*([^<]+?)\s*<\/a>/g;
   let m: RegExpExecArray | null;
   while ((m = regex.exec(res.data)) !== null) {
     const name = m[2].trim();
@@ -90,15 +98,18 @@ async function fetchTabs(pubKey: string): Promise<{ name: string; gid: string }[
   return tabs;
 }
 
-/** Find the gid of the "valoración por casos" tab (e.g. "4.1 Valoracion por casos"). */
+/** Find the gid of the "valoración por casos" tab (e.g. "4.1 Valoración por casos"). */
 export async function resolveCasesGid(modelUrl: string): Promise<string | undefined> {
   const pubKey = extractPubKey(modelUrl);
   let tabs: { name: string; gid: string }[] = [];
   try { tabs = await fetchTabs(pubKey); } catch { return undefined; }
   const norm = (s: string) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  // "4.1 Valoración por casos" → match on the phrase, the "4.1" prefix, or just "casos".
   const byCases = tabs.find(t => norm(t.name).includes('valoracion por casos'));
-  const byNum = tabs.find(t => /\b4\.1\b/.test(t.name) || norm(t.name).includes('casos'));
-  return (byCases ?? byNum)?.gid;
+  const byPartial = tabs.find(t => norm(t.name).includes('por casos') || norm(t.name).includes('valoracion_por_casos'));
+  const byNum = tabs.find(t => /\b4\.1\b/.test(t.name) || /^4\.1/.test(t.name.trim()));
+  const byCasos = tabs.find(t => norm(t.name).includes('casos'));
+  return (byCases ?? byPartial ?? byNum ?? byCasos)?.gid;
 }
 
 export async function fetchModelCases(
