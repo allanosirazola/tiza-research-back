@@ -86,26 +86,67 @@ export function cellNum(grid: string[][], ref: string): number | null {
   return isNaN(n) ? null : n;
 }
 
-export async function fetchTabs(ref: SheetRef): Promise<{ name: string; gid: string }[]> {
-  // Reuse the robust multi-strategy tab parser from sheetsSync (the single-regex
-  // version here missed tabs like "4.1 Valoración por casos" depending on markup).
-  try {
-    const tabs = await fetchSheetTabs(pubhtmlUrl(ref));
-    if (tabs.length) return tabs;
-  } catch { /* fall through to the local parser */ }
+/** Candidate URLs to enumerate tabs, depending on how the sheet is shared. */
+function tabListUrls(ref: SheetRef): string[] {
+  if (ref.kind === 'published') {
+    return [`https://docs.google.com/spreadsheets/d/e/${ref.key}/pubhtml`];
+  }
+  // A regular (link-shared) sheet isn't "published", so /pubhtml 404s. /htmlview
+  // renders the tab bar for anyone-with-link sheets; keep /pubhtml as a fallback.
+  return [
+    `https://docs.google.com/spreadsheets/d/${ref.key}/htmlview`,
+    `https://docs.google.com/spreadsheets/d/${ref.key}/pubhtml`,
+  ];
+}
 
-  const res = await axios.get<string>(pubhtmlUrl(ref), {
-    timeout: 20000,
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' },
-  });
+function parseTabsFromHtml(html: string): { name: string; gid: string }[] {
   const tabs: { name: string; gid: string }[] = [];
-  const regex = /href="[^"]*#?gid=(\d+)"[^>]*>\s*([^<]+?)\s*<\/a>/g;
+  // Strategy 1: Google's tab bar — <li id="sheet-button-GID">…<a>Name</a>.
+  const reLi = /id="sheet-button-(\d+)"[\s\S]*?>([^<]{1,60})</g;
   let m: RegExpExecArray | null;
-  while ((m = regex.exec(res.data)) !== null) {
+  while ((m = reLi.exec(html)) !== null) {
     const name = m[2].trim();
     if (name && !tabs.find(t => t.gid === m![1])) tabs.push({ gid: m[1], name });
   }
+  // Strategy 2: any anchor carrying a gid.
+  if (tabs.length === 0) {
+    const reA = /[?#&]gid=(\d+)[^>]*>\s*([^<]{1,60}?)\s*</g;
+    while ((m = reA.exec(html)) !== null) {
+      const name = m[2].trim();
+      if (name && !tabs.find(t => t.gid === m![1])) tabs.push({ gid: m[1], name });
+    }
+  }
   return tabs;
+}
+
+export async function fetchTabs(ref: SheetRef): Promise<{ name: string; gid: string }[]> {
+  // For published sheets, reuse the robust shared parser first.
+  if (ref.kind === 'published') {
+    try {
+      const tabs = await fetchSheetTabs(`https://docs.google.com/spreadsheets/d/e/${ref.key}/pubhtml`);
+      if (tabs.length) return tabs;
+    } catch { /* fall through */ }
+  }
+
+  const errors: string[] = [];
+  for (const url of tabListUrls(ref)) {
+    try {
+      const res = await axios.get<string>(url, {
+        timeout: 20000,
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' },
+      });
+      const tabs = parseTabsFromHtml(res.data as string);
+      if (tabs.length) return tabs;
+      errors.push(`${url} → 200 pero 0 pestañas`);
+    } catch (e: any) {
+      errors.push(`${url} → ${e?.response?.status ?? e?.message ?? 'error'}`);
+    }
+  }
+  // Surface why nothing was found so the UI can tell the user to publish the sheet.
+  throw new Error(
+    `No se pudieron leer las pestañas del modelo (${ref.kind}). ` +
+    `Probablemente el modelo no está "Publicado en la web". Detalle: ${errors.join(' ; ')}`
+  );
 }
 
 const normName = (s: string) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
@@ -140,11 +181,13 @@ export async function fetchModelCases(
   const pubKey = extractPubKey(modelUrl);
   let gid = opts.gid;
   if (!gid) {
-    const tabs = await fetchTabs(pubKey).catch(() => [] as { name: string; gid: string }[]);
+    // Let fetchTabs throw its descriptive error (e.g. "not published") rather than
+    // hiding it behind a generic "ninguna detectada".
+    const tabs = await fetchTabs(pubKey);
     gid = pickCasesGid(tabs);
     if (!gid) {
       const list = tabs.length ? tabs.map(t => t.name).join(' | ') : '(ninguna detectada)';
-      throw new Error(`No se encontró la pestaña de "valoración por casos". Pestañas detectadas: ${list}`);
+      throw new Error(`No se encontró la pestaña "4.1 Valoración por casos". Pestañas detectadas: ${list}`);
     }
   }
 
