@@ -22,9 +22,9 @@ export interface ModelCasesData {
 
 // A model URL is either a PUBLISHED sheet (/d/e/PUBKEY/…) or a regular shared sheet
 // (/spreadsheets/d/ID/edit). Track which so we can build the right CSV/pubhtml URLs.
-interface SheetRef { kind: 'published' | 'regular'; key: string; }
+export interface SheetRef { kind: 'published' | 'regular'; key: string; }
 
-function extractPubKey(url: string): SheetRef {
+export function extractPubKey(url: string): SheetRef {
   const pub = url.match(/\/d\/e\/([a-zA-Z0-9_-]+)/);
   if (pub) return { kind: 'published', key: pub[1] };
   const reg = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
@@ -32,7 +32,7 @@ function extractPubKey(url: string): SheetRef {
   throw new Error('URL de Google Sheets no válida (esperaba /d/e/PUBKEY o /spreadsheets/d/ID)');
 }
 
-function csvUrl(ref: SheetRef, gid: string): string {
+export function csvUrl(ref: SheetRef, gid: string): string {
   return ref.kind === 'published'
     ? `https://docs.google.com/spreadsheets/d/e/${ref.key}/pub?gid=${gid}&single=true&output=csv`
     : `https://docs.google.com/spreadsheets/d/${ref.key}/export?format=csv&gid=${gid}`;
@@ -59,7 +59,7 @@ function parseRow(line: string): string[] {
   return cells;
 }
 
-function parseGrid(csv: string): string[][] {
+export function parseGrid(csv: string): string[][] {
   return csv.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').map(l => parseRow(l).map(c => c.trim()));
 }
 
@@ -86,7 +86,7 @@ export function cellNum(grid: string[][], ref: string): number | null {
   return isNaN(n) ? null : n;
 }
 
-async function fetchTabs(ref: SheetRef): Promise<{ name: string; gid: string }[]> {
+export async function fetchTabs(ref: SheetRef): Promise<{ name: string; gid: string }[]> {
   // Reuse the robust multi-strategy tab parser from sheetsSync (the single-regex
   // version here missed tabs like "4.1 Valoración por casos" depending on markup).
   try {

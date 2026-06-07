@@ -31,6 +31,18 @@ export interface FundamentalsData {
   industry?: string;
   shortName?: string;
   longName?: string;
+  website?: string;
+  logoUrl?: string;
+}
+
+/** Derive a logo URL from a company website domain (Clearbit logo CDN, no key). */
+export function logoFromWebsite(website?: string): string | undefined {
+  if (!website) return undefined;
+  try {
+    const host = new URL(website.startsWith('http') ? website : `https://${website}`).hostname.replace(/^www\./, '');
+    if (!host) return undefined;
+    return `https://logo.clearbit.com/${host}`;
+  } catch { return undefined; }
 }
 
 /* ─── Custom Yahoo Finance HTTP client ────────────────────────────── */
@@ -459,10 +471,11 @@ export async function refreshAllCompanyPrices(): Promise<{ updated: number; erro
             `UPDATE companies SET
               pe_ratio  = COALESCE(pe_ratio,  $1),
               ev_ebitda = COALESCE(ev_ebitda, $2),
-              sector    = COALESCE(NULLIF(sector,''), $3)
-             WHERE id = $4`,
+              sector    = COALESCE(NULLIF(sector,''), $3),
+              logo_url  = COALESCE(NULLIF(logo_url,''), $4)
+             WHERE id = $5`,
             [funds.trailingPE ?? null, funds.enterpriseToEbitda ?? null,
-             funds.sector ?? null, company.id as string]
+             funds.sector ?? null, funds.logoUrl ?? null, company.id as string]
           );
         }
       } catch { /* non-fatal */ }
@@ -534,9 +547,11 @@ export async function fetchFundamentals(ticker: string): Promise<FundamentalsDat
       data.marketCap           = data.marketCap           ?? rawNum(sd.marketCap);
       data.sector              = data.sector              ?? prof.sector ?? undefined;
       data.industry            = data.industry            ?? prof.industry ?? undefined;
+      data.website             = data.website             ?? prof.website ?? undefined;
     }
   }
 
+  data.logoUrl = logoFromWebsite(data.website);
   return data;
 }
 

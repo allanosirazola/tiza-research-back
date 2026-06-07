@@ -47,13 +47,14 @@ export interface PortfolioPosition {
   sheet_value?: number;     // "Valor a día de hoy" from the sheet (weight fallback)
   market_value?: number;    // shares × current_price, converted to USD
   position_size?: number;   // weight % — computed from market_value / total
-  pe_ratio?: number;
-  ev_ebitda?: number;
+  pe_ratio?: number;        // PER ex Cash from the model (not Yahoo)
+  ev_fcf?: number;          // EV / FCF from the model (replaces EV/EBITDA)
+  ev_ebitda?: number;       // kept for back-compat, no longer surfaced
   conviction?: number;
-  upside?: number;          // calculated
-  total_return?: number;    // from the model (model_return), N/A if no model
-  cagr?: number;            // from the model (model_cagr), N/A if no model
-  has_model?: boolean;      // whether return/CAGR come from a parsed model
+  upside?: number;          // (model target − current) / current
+  total_return?: number;    // price-based: (current − entry) / entry
+  cagr?: number;            // from the model (annualized/CAGR)
+  has_model?: boolean;      // whether the model has been parsed
   ytd_return?: number;      // YTD return %
   ytd_contribution?: number; // YTD contribution in pp
   pnl_value?: number;       // position W/L incl. dividends, from the sheet (USD)
@@ -116,7 +117,8 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
     `SELECT id, name, ticker, sector, currency, entry_price, entry_date,
             current_price, target_price, position_size, shares, sheet_value,
             pnl_value, pnl_pct, dividends,
-            model_return, model_cagr, pe_ratio, ev_ebitda, conviction, status
+            model_return, model_cagr, model_ev_per, model_ev_fcf, model_target_price,
+            pe_ratio, ev_ebitda, conviction, status
      FROM companies
      WHERE status = 'active'
      ORDER BY position_size DESC NULLS LAST`
@@ -142,15 +144,25 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
       marketValue = toUsd(sheetValue, r.currency, fx);
     }
 
+    // Target price: prefer the model's average objetivo, else any manual target.
+    const modelTarget = r.model_target_price != null ? Number(r.model_target_price) : undefined;
+    const effectiveTarget = modelTarget ?? targetPrice;
+
     let upside: number | undefined;
-    if (currentPrice && targetPrice && currentPrice > 0) {
-      upside = ((targetPrice - currentPrice) / currentPrice) * 100;
+    if (currentPrice && effectiveTarget && currentPrice > 0) {
+      upside = ((effectiveTarget - currentPrice) / currentPrice) * 100;
     }
 
-    // Return & CAGR come from the valuation-by-cases model (chosen cells), not from
-    // price math. They stay undefined (→ N/A in the UI) when no model is parsed.
-    const modelReturn = r.model_return != null ? Number(r.model_return) : undefined;
-    const modelCagr   = r.model_cagr   != null ? Number(r.model_cagr)   : undefined;
+    // Total return is price-based (we have entry + current price). CAGR comes from
+    // the model. Multiples (PER ex Cash, EV/FCF) come from the model, not Yahoo.
+    let totalReturn: number | undefined;
+    if (entryPrice && currentPrice && entryPrice > 0) {
+      totalReturn = ((currentPrice - entryPrice) / entryPrice) * 100;
+    }
+    const modelReturn = totalReturn;
+    const modelCagr   = r.model_cagr != null ? Number(r.model_cagr) : undefined;
+    const modelEvPer  = r.model_ev_per != null ? Number(r.model_ev_per) : undefined;
+    const modelEvFcf  = r.model_ev_fcf != null ? Number(r.model_ev_fcf) : undefined;
 
     const pos: PortfolioPosition = {
       id: r.id,
@@ -161,12 +173,13 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
       entry_price: entryPrice,
       entry_date: entryDate,
       current_price: currentPrice,
-      target_price: targetPrice,
+      target_price: effectiveTarget,
       shares,
       sheet_value: sheetValue,
       market_value: marketValue,
       position_size: r.position_size != null ? Number(r.position_size) : undefined,
-      pe_ratio: r.pe_ratio != null ? Number(r.pe_ratio) : undefined,
+      pe_ratio: modelEvPer ?? (r.pe_ratio != null ? Number(r.pe_ratio) : undefined),
+      ev_fcf: modelEvFcf,
       ev_ebitda: r.ev_ebitda != null ? Number(r.ev_ebitda) : undefined,
       conviction: r.conviction,
       upside,
@@ -175,7 +188,7 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
       dividends: r.dividends != null ? Number(r.dividends) : undefined,
       total_return: modelReturn,
       cagr: modelCagr,
-      has_model: modelReturn != null || modelCagr != null,
+      has_model: modelEvPer != null || modelCagr != null || modelTarget != null,
       status: r.status,
     };
     pos.is_cash = isCashPosition(pos);
@@ -230,10 +243,11 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
       const wt = peItems.reduce((s, p) => s + (p.position_size ?? 0), 0);
       weightedPe = peItems.reduce((s, p) => s + (p.pe_ratio! * (p.position_size ?? 0)), 0) / wt;
     }
-    const evItems = withWeight.filter(p => p.ev_ebitda != null && !p.is_cash);
+    // Now weighted by EV/FCF (from the model), not EV/EBITDA.
+    const evItems = withWeight.filter(p => p.ev_fcf != null && !p.is_cash);
     if (evItems.length) {
       const wt = evItems.reduce((s, p) => s + (p.position_size ?? 0), 0);
-      weightedEvEbitda = evItems.reduce((s, p) => s + (p.ev_ebitda! * (p.position_size ?? 0)), 0) / wt;
+      weightedEvEbitda = evItems.reduce((s, p) => s + (p.ev_fcf! * (p.position_size ?? 0)), 0) / wt;
     }
     const upsideItems = withWeight.filter(p => p.upside != null);
     if (upsideItems.length) {
