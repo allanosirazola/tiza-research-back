@@ -56,24 +56,35 @@ router.get('/thesis', async (req: Request, res: Response) => {
   }
 });
 
-/** Flatten Notion API blocks into the collapsible-section shape used by the UI. */
-function blocksToSections(blocks: any[]): { heading: string; level: number; blocks: { id: string; type: string; text: string }[] }[] {
+/** Flatten Notion API blocks into the collapsible-section shape used by the UI.
+ *  Recurses into children so toggle-headings, toggles and columns contribute their
+ *  content, and surfaces images with their URL. */
+function blocksToSections(blocks: any[]): { heading: string; level: number; blocks: { id: string; type: string; text: string; url?: string }[] }[] {
   const sections: any[] = [];
   let current: any = { heading: '', level: 1, blocks: [] };
   const headingLevel: Record<string, number> = { heading_1: 1, heading_2: 2, heading_3: 3 };
   const textOf = (b: any): string =>
     (b.richContent?.map((r: any) => r.text).join('') ?? b.content ?? '').trim();
-  for (const b of blocks) {
-    const lvl = headingLevel[b.type];
-    if (lvl) {
-      if (current.blocks.length || current.heading) sections.push(current);
-      current = { heading: textOf(b), level: lvl, blocks: [] };
-    } else {
-      const t = textOf(b);
-      if (t) current.blocks.push({ id: b.id, type: b.type, text: t });
+  const flush = () => { if (current.blocks.length || current.heading) sections.push(current); };
+
+  const walk = (list: any[]) => {
+    for (const b of list) {
+      const lvl = headingLevel[b.type];
+      if (lvl) {
+        flush();
+        current = { heading: textOf(b), level: lvl, blocks: [] };
+        if (b.children?.length) walk(b.children); // toggle-heading content lives in children
+      } else if (b.type === 'image') {
+        current.blocks.push({ id: b.id, type: 'image', text: b.caption ?? '', url: b.url });
+      } else {
+        const t = textOf(b);
+        if (t) current.blocks.push({ id: b.id, type: b.type, text: t, url: b.url });
+        if (b.children?.length) walk(b.children); // toggles, columns, nested lists…
+      }
     }
-  }
-  if (current.blocks.length || current.heading) sections.push(current);
+  };
+  walk(blocks);
+  flush();
   return sections;
 }
 
