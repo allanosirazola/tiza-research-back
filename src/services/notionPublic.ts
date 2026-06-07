@@ -125,3 +125,32 @@ export async function scrapeNotionThesis(pageUrl: string): Promise<ScrapedThesis
 
   return { url: pageUrl, pageId, title, sections };
 }
+
+/** Debug: return the raw recordMap shape so we can see how Notion structures the page. */
+export async function debugNotionThesis(pageUrl: string): Promise<any> {
+  const pageId = extractNotionPageId(pageUrl);
+  if (!pageId) return { error: 'no pageId', pageUrl };
+  try {
+    const res = await axios.post(
+      'https://www.notion.so/api/v3/loadPageChunk',
+      { pageId, limit: 100, cursor: { stack: [] }, chunkNumber: 0, verticalColumns: false },
+      { timeout: 20000, headers: { 'User-Agent': UA, 'Content-Type': 'application/json', 'Accept': 'application/json' } },
+    );
+    const block = (res.data as any)?.recordMap?.block ?? {};
+    const ids = Object.keys(block);
+    const sample: any = {};
+    for (const id of ids.slice(0, 6)) {
+      const v = block[id]?.value;
+      sample[id] = v ? { type: v.type, hasTitle: !!v?.properties?.title, contentLen: (v.content ?? []).length, props: Object.keys(v.properties ?? {}) } : null;
+    }
+    return {
+      pageId, blockCount: ids.length,
+      rootExists: !!block[pageId]?.value,
+      rootType: block[pageId]?.value?.type,
+      rootContentLen: (block[pageId]?.value?.content ?? []).length,
+      sample,
+    };
+  } catch (e: any) {
+    return { pageId, error: e?.response?.status ?? e?.message, body: typeof e?.response?.data === 'string' ? e.response.data.slice(0, 300) : e?.response?.data };
+  }
+}

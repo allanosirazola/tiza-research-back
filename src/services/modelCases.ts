@@ -217,10 +217,16 @@ export async function debugModelTabs(modelUrl: string): Promise<any> {
       });
       const html = res.data as string;
       const tabs = parseTabsFromHtml(html);
-      const idx = html.search(/sheet-button|[?#&]gid=|sheet-menu/);
+      // Capture the ACTUAL <ul id="sheet-menu"> element (not the CSS rule) and the
+      // first few gid= occurrences so we can see Google's real tab markup.
+      const menuMatch = html.match(/<ul[^>]*id="sheet-menu"[\s\S]*?<\/ul>/i);
+      const gidHits = (html.match(/gid=\d+/g) ?? []).slice(0, 12);
+      const liHits = (html.match(/<li[^>]*>[\s\S]*?<\/li>/gi) ?? []).slice(0, 12);
       out.attempts.push({
         url, status: 200, length: html.length, tabsFound: tabs.length, tabs,
-        snippet: idx >= 0 ? html.slice(Math.max(0, idx - 200), idx + 600) : html.slice(0, 800),
+        menu: menuMatch ? menuMatch[0].slice(0, 2000) : '(no <ul id="sheet-menu"> found)',
+        gidHits,
+        liSample: liHits,
       });
     } catch (e: any) {
       out.attempts.push({ url, status: e?.response?.status ?? null, error: e?.message });
