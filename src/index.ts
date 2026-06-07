@@ -18,6 +18,7 @@ import transcriptsRouter from './routes/transcripts';
 import portfolioRouter from './routes/portfolio';
 import { seedPortfolioHistory } from './services/portfolioSeed';
 import { refreshAllCompanyPrices } from './services/marketData';
+import { refreshAllEvents } from './services/eventsFetcher';
 import { checkAndFireAlerts, generateWeeklySummary } from './services/alerts';
 
 const app = express();
@@ -67,6 +68,17 @@ cron.schedule('0 * * * *', async () => {
     await checkAndFireAlerts();
   } catch (err) {
     console.error('[cron] Price refresh/alert check failed:', err);
+  }
+});
+
+// Daily 6am: auto-fetch company events (IR pages + Yahoo earnings/dividends).
+cron.schedule('0 6 * * *', async () => {
+  console.log('[cron] Refreshing company events...');
+  try {
+    const r = await refreshAllEvents();
+    console.log(`[cron] Events refreshed: ${r.added} new across ${r.companies} companies`);
+  } catch (err) {
+    console.error('[cron] Events refresh failed:', err);
   }
 });
 

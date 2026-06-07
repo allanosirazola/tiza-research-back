@@ -1,7 +1,20 @@
 import { Router, Request, Response } from 'express';
 import pool from '../db';
+import { refreshAllEvents, refreshCompanyEvents } from '../services/eventsFetcher';
 
 const router = Router();
+
+// POST /api/events/refresh-all — auto-fetch events (IR + Yahoo) for every company.
+router.post('/refresh-all', async (_req: Request, res: Response) => {
+  try { return res.json(await refreshAllEvents()); }
+  catch (err: any) { console.error('[events/refresh-all]', err?.message); return res.status(500).json({ error: err?.message ?? 'Failed' }); }
+});
+
+// POST /api/events/refresh/:companyId — refresh one company's events.
+router.post('/refresh/:companyId', async (req: Request, res: Response) => {
+  try { return res.json(await refreshCompanyEvents(req.params.companyId)); }
+  catch (err: any) { console.error('[events/refresh]', err?.message); return res.status(500).json({ error: err?.message ?? 'Failed' }); }
+});
 
 // GET /api/events/upcoming?days=7
 router.get('/upcoming', async (req: Request, res: Response) => {

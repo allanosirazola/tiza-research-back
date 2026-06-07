@@ -173,6 +173,13 @@ export async function initDb(): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_company_events_company_id ON company_events(company_id);
     CREATE INDEX IF NOT EXISTS idx_company_events_date ON company_events(event_date);
+    -- Distinguish auto-fetched events (yahoo / IR) from manual ones, and de-dup them.
+    ALTER TABLE company_events ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'manual';
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_company_events_auto
+      ON company_events(company_id, source, event_date, title)
+      WHERE source <> 'manual';
+    -- Auto-discovered Investor Relations events page.
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS ir_events_url TEXT;
 
     CREATE TABLE IF NOT EXISTS transcripts (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
