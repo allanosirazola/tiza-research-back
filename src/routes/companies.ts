@@ -5,7 +5,10 @@ import {
   extractEarningsCallsFromPage,
   fetchPageBlocksCached,
   invalidateCache,
+  getPageIcon,
+  extractPageIdFromUrl,
 } from '../notionClient';
+import { fetchFundamentals } from '../services/marketData';
 import { fetchModelCases, resolveCasesGid, listModelTabs, pickCasesGid, debugModelTabs } from '../services/modelCases';
 import { parseFullModel } from '../services/modelFull';
 
@@ -344,6 +347,38 @@ router.get('/:id/model-full', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[model-full]', err);
     return res.status(500).json({ error: err.message ?? 'Failed to fetch model' });
+  }
+});
+
+// POST /api/companies/:id/refresh-logo — resolve a logo: Notion page icon first,
+// then the company website (Clearbit) derived from Yahoo. Persists logo_url.
+router.post('/:id/refresh-logo', async (req: Request, res: Response) => {
+  try {
+    const c = await pool.query('SELECT * FROM companies WHERE id = $1', [req.params.id]);
+    if (c.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
+    const company = c.rows[0];
+
+    let logo: string | null = null;
+    // 1) Notion page icon (the company logo the user set in Notion).
+    const pageId = company.notion_page_id
+      ?? (company.thesis_url ? extractPageIdFromUrl(company.thesis_url) : null)
+      ?? (company.notion_page_url ? extractPageIdFromUrl(company.notion_page_url) : null);
+    if (pageId && process.env.NOTION_TOKEN) {
+      logo = await getPageIcon(pageId).catch(() => null);
+    }
+    // 2) Fallback: website domain → Clearbit (via Yahoo fundamentals).
+    if (!logo && company.ticker) {
+      const funds = await fetchFundamentals(company.ticker).catch(() => null);
+      logo = funds?.logoUrl ?? null;
+    }
+
+    if (logo) {
+      await pool.query('UPDATE companies SET logo_url = $1, updated_at = NOW() WHERE id = $2', [logo, req.params.id]);
+    }
+    return res.json({ logo_url: logo });
+  } catch (err: any) {
+    console.error('[refresh-logo]', err?.message);
+    return res.status(500).json({ error: err?.message ?? 'Failed to refresh logo' });
   }
 });
 

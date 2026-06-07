@@ -365,6 +365,20 @@ export async function getPageTitle(pageId: string): Promise<string> {
   return 'Untitled';
 }
 
+/** Return the page's icon as an image URL (external/file). Emojis return null so the
+ *  caller can fall back to another logo source. */
+export async function getPageIcon(pageId: string): Promise<string | null> {
+  try {
+    const notion = getNotionClient();
+    const page: any = await notion.pages.retrieve({ page_id: pageId });
+    const icon = page?.icon;
+    if (!icon) return null;
+    if (icon.type === 'external') return icon.external?.url ?? null;
+    if (icon.type === 'file') return icon.file?.url ?? null;
+    return null; // emoji → no image
+  } catch { return null; }
+}
+
 export function extractPageIdFromUrl(url: string): string | null {
   const match = url.match(/([a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
   if (match) {
