@@ -9,7 +9,7 @@ import {
   extractPageIdFromUrl,
 } from '../notionClient';
 import { fetchFundamentals } from '../services/marketData';
-import { fetchModelCases, resolveCasesGid, listModelTabs, pickCasesGid, debugModelTabs } from '../services/modelCases';
+import { fetchModelCases, resolveCasesGid, listModelTabs, pickCasesGid, debugModelTabs, parseStructuredCases } from '../services/modelCases';
 import { parseFullModel } from '../services/modelFull';
 
 const router = Router();
@@ -234,6 +234,25 @@ router.get('/:id/model-debug', async (req: Request, res: Response) => {
     return res.json(await debugModelTabs(c.rows[0].model_url));
   } catch (err: any) {
     return res.status(500).json({ error: err.message ?? 'debug failed' });
+  }
+});
+
+// GET /api/companies/:id/valuation-cases — structured cases (Mejor/Medio/Peor +
+// Ponderado) for the Valoración tab charts, parsed from "4.1 Valoración por casos".
+router.get('/:id/valuation-cases', async (req: Request, res: Response) => {
+  try {
+    const c = await pool.query('SELECT model_url, model_cases_gid, current_price FROM companies WHERE id = $1', [req.params.id]);
+    if (c.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
+    const company = c.rows[0];
+    if (!company.model_url) return res.status(400).json({ error: 'No model URL set for this company' });
+    const data = await parseStructuredCases(company.model_url, {
+      gid: company.model_cases_gid || undefined,
+    });
+    if (company.current_price != null) data.currentPrice = Number(company.current_price);
+    return res.json(data);
+  } catch (err: any) {
+    console.error('[valuation-cases]', err?.message);
+    return res.status(500).json({ error: err?.message ?? 'Failed to parse valuation cases' });
   }
 });
 

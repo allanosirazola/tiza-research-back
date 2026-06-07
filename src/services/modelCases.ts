@@ -363,3 +363,100 @@ export async function fetchModelCases(
     cagrValue: cellNum(grid, cagrCell),
   };
 }
+
+/* ─── Structured "valoración por casos" for the Valoración tab charts ───────── */
+
+function num(s: string | undefined): number | null {
+  if (s == null) return null;
+  let c = String(s).replace(/[%€$£\s]/g, '').trim();
+  if (!c || c === '-' || c === 'N/A') return null;
+  const hasC = c.includes(','), hasD = c.includes('.');
+  if (hasC && hasD) { if (c.lastIndexOf(',') > c.lastIndexOf('.')) c = c.replace(/\./g, '').replace(',', '.'); else c = c.replace(/,/g, ''); }
+  else if (hasD) { if (/^\d{1,3}(\.\d{3})+$/.test(c)) c = c.replace(/\./g, ''); }
+  else if (hasC) { c = /^\d{1,3}(,\d{3})+$/.test(c) ? c.replace(/,/g, '') : c.replace(',', '.'); }
+  const n = parseFloat(c);
+  return isNaN(n) ? null : n;
+}
+
+export interface CaseSeries {
+  name: string;                 // Mejor / Medio / Peor / Ponderado
+  cagr: number | null;          // CAGR 5 años (decimal, e.g. 0.08)
+  perExCash: (number | null)[]; // target price per year
+  evFcf: (number | null)[];
+  avg: (number | null)[];       // mean of the two methods per year
+}
+export interface StructuredCases {
+  years: string[];
+  currentPrice: number | null;
+  cases: CaseSeries[];          // Mejor, Medio, Peor (in order)
+  weighted: CaseSeries | null;  // Ponderado
+  projections: { label: string; mejor: string; medio: string; peor: string }[];
+  returnValue: number | null;   // H10 (weighted return)
+  cagrValue: number | null;     // H11 (weighted CAGR)
+}
+
+/** Parse the cases tab into a chart-ready structure (Mejor/Medio/Peor + Ponderado). */
+export async function parseStructuredCases(
+  modelUrl: string,
+  opts: { gid?: string; returnCell?: string; cagrCell?: string } = {}
+): Promise<StructuredCases> {
+  const raw = await fetchModelCases(modelUrl, opts);
+  const { headers, rows } = raw;
+
+  // Year columns = header cells that look like a year; CAGR + projection columns by name.
+  const yearCols: { year: string; idx: number }[] = [];
+  let cagrCol = -1, projCol = -1;
+  headers.forEach((h, idx) => {
+    if (/^(19|20)\d{2}e?$/.test(h.trim())) yearCols.push({ year: h.trim(), idx });
+    if (normName(h).includes('cagr')) cagrCol = idx;
+    if (normName(h).includes('proyeccion')) projCol = idx;
+  });
+  const years = yearCols.map(y => y.year);
+  const targetsOf = (row: string[]) => yearCols.map(({ idx }) => num(row[idx]));
+
+  // Price-method rows in document order: [Mejor PER, Mejor EV, Medio PER, Medio EV,
+  // Peor PER, Peor EV, Pond PER, Pond EV].
+  const methodRows = rows.filter(r => /per ex cash|ev ?\/ ?fcf/i.test(normName(r[0] ?? '')));
+  const names = ['Mejor', 'Medio', 'Peor', 'Ponderado'];
+  const cases: CaseSeries[] = [];
+  for (let i = 0; i < methodRows.length; i += 2) {
+    const perRow = methodRows[i];
+    const evRow = methodRows[i + 1] ?? [];
+    const per = targetsOf(perRow);
+    const ev = targetsOf(evRow);
+    const avg = years.map((_, k) => {
+      const a = per[k], b = ev[k];
+      if (a == null && b == null) return null;
+      if (a == null) return b; if (b == null) return a;
+      return (a + b) / 2;
+    });
+    // CAGR cells are percentages ("8%", "1%", "-14%"). If the cell carries "%", it's
+    // a percent → divide by 100; otherwise treat a >1.5 magnitude as a percent too.
+    const cagrCell = cagrCol >= 0 ? (perRow[cagrCol] ?? '') : '';
+    const cagrRaw = num(cagrCell);
+    const cagr = cagrRaw == null ? null
+      : (cagrCell.includes('%') || Math.abs(cagrRaw) > 1.5 ? cagrRaw / 100 : cagrRaw);
+    cases.push({ name: names[Math.floor(i / 2)] ?? `Caso ${i / 2 + 1}`, cagr, perExCash: per, evFcf: ev, avg });
+  }
+  const weighted = cases.find(c => c.name === 'Ponderado') ?? null;
+  const scenarioCases = cases.filter(c => c.name !== 'Ponderado');
+
+  // Projection inputs: rows carrying a projection label (cols projCol..projCol+3).
+  const projections: { label: string; mejor: string; medio: string; peor: string }[] = [];
+  if (projCol >= 0) {
+    for (const r of rows) {
+      const label = (r[projCol] ?? '').trim();
+      if (label) projections.push({ label, mejor: (r[projCol + 1] ?? '').trim(), medio: (r[projCol + 2] ?? '').trim(), peor: (r[projCol + 3] ?? '').trim() });
+    }
+  }
+
+  return {
+    years,
+    currentPrice: null,
+    cases: scenarioCases,
+    weighted,
+    projections,
+    returnValue: raw.returnValue,
+    cagrValue: raw.cagrValue,
+  };
+}
