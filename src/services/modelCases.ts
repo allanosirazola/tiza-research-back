@@ -150,6 +150,60 @@ export function parseTabsFromHtml(htmlRaw: string): { name: string; gid: string 
   return tabs;
 }
 
+/** Extract the sheet gids in document order from a pubhtml, even when there are no
+ *  named <li>/<a> tabs (newer Google markup only embeds bare gid= references). */
+export function extractGidsInOrder(htmlRaw: string): string[] {
+  const html = decodeEntities(htmlRaw);
+  const seen = new Set<string>();
+  const order: string[] = [];
+  const re = /gid=(\d+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    if (!seen.has(m[1])) { seen.add(m[1]); order.push(m[1]); }
+  }
+  return order;
+}
+
+/** Does a sheet grid look like the "4.1 Valoración por casos" tab? */
+function looksLikeCasesGrid(grid: string[][]): boolean {
+  const flat = grid.slice(0, 12).map(r => r.map(c => normName(c)).join(' ')).join(' | ');
+  const hasObjetivo = flat.includes('precio objetivo');
+  const hasCases = flat.includes('caso mejor') || flat.includes('caso medio') || flat.includes('caso peor');
+  const hasProj = flat.includes('proyeccion a futuro') || flat.includes('crecimiento en ventas');
+  return (hasObjetivo && hasCases) || hasCases || (hasObjetivo && hasProj);
+}
+
+/** Resolve the cases-sheet gid by fetching each tab and checking its content.
+ *  Works regardless of tab markup/names — the last resort when names aren't found. */
+async function resolveCasesGidByContent(ref: SheetRef): Promise<string | undefined> {
+  let html = '';
+  try {
+    const res = await axios.get<string>(
+      ref.kind === 'published'
+        ? `https://docs.google.com/spreadsheets/d/e/${ref.key}/pubhtml`
+        : `https://docs.google.com/spreadsheets/d/${ref.key}/htmlview`,
+      { timeout: 20000, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' } },
+    );
+    html = res.data as string;
+  } catch { return undefined; }
+
+  const gids = extractGidsInOrder(html);
+  if (!gids.length) return undefined;
+
+  // The template's tab order is fixed: 4.1 Valoración por casos is the 5th sheet.
+  // Try that first (fast path), then fall back to scanning each tab's content.
+  const candidates = gids[4] ? [gids[4], ...gids.filter((_, i) => i !== 4)] : gids;
+  for (const gid of candidates) {
+    try {
+      const res = await axios.get<string>(csvUrl(ref, gid), {
+        timeout: 15000, responseType: 'text', headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' },
+      });
+      if (looksLikeCasesGrid(parseGrid(res.data))) return gid;
+    } catch { /* try next */ }
+  }
+  return undefined;
+}
+
 export async function fetchTabs(ref: SheetRef): Promise<{ name: string; gid: string }[]> {
   // For published sheets, reuse the robust shared parser first.
   if (ref.kind === 'published') {
@@ -242,13 +296,15 @@ export async function fetchModelCases(
   const pubKey = extractPubKey(modelUrl);
   let gid = opts.gid;
   if (!gid) {
-    // Let fetchTabs throw its descriptive error (e.g. "not published") rather than
-    // hiding it behind a generic "ninguna detectada".
-    const tabs = await fetchTabs(pubKey);
+    // Try named-tab detection first; if the markup has no named tabs (newer Google
+    // pubhtml only embeds bare gids), fall back to content-based detection.
+    let tabs: { name: string; gid: string }[] = [];
+    try { tabs = await fetchTabs(pubKey); } catch { /* no named tabs */ }
     gid = pickCasesGid(tabs);
+    if (!gid) gid = await resolveCasesGidByContent(pubKey);
     if (!gid) {
-      const list = tabs.length ? tabs.map(t => t.name).join(' | ') : '(ninguna detectada)';
-      throw new Error(`No se encontró la pestaña "4.1 Valoración por casos". Pestañas detectadas: ${list}`);
+      const list = tabs.length ? tabs.map(t => t.name).join(' | ') : '(sin pestañas con nombre)';
+      throw new Error(`No se encontró "4.1 Valoración por casos" (ni por nombre ni por contenido). Pestañas: ${list}`);
     }
   }
 

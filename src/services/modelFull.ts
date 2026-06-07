@@ -1,7 +1,18 @@
 import axios from 'axios';
 import {
-  SheetRef, extractPubKey, csvUrl, parseGrid, fetchTabs, cellNum,
+  SheetRef, extractPubKey, csvUrl, parseGrid, fetchTabs, cellNum, extractGidsInOrder,
 } from './modelCases';
+
+/** Fetch sheet gids in document order from the pubhtml/htmlview (no named tabs needed). */
+async function fetchOrderedGids(ref: SheetRef): Promise<string[]> {
+  const url = ref.kind === 'published'
+    ? `https://docs.google.com/spreadsheets/d/e/${ref.key}/pubhtml`
+    : `https://docs.google.com/spreadsheets/d/${ref.key}/htmlview`;
+  try {
+    const res = await axios.get<string>(url, { timeout: 20000, headers: { 'User-Agent': UA } });
+    return extractGidsInOrder(res.data as string);
+  } catch { return []; }
+}
 
 /**
  * Full model parser for the standard template (tabs: 1.Income Statement,
@@ -149,7 +160,8 @@ function parseValuationTab(grid: string[][]): {
 
 export async function parseFullModel(modelUrl: string): Promise<ModelFull> {
   const ref = extractPubKey(modelUrl);
-  const tabs = await fetchTabs(ref);
+  let tabs: { name: string; gid: string }[] = [];
+  try { tabs = await fetchTabs(ref); } catch { /* no named tabs */ }
 
   const findGid = (...needles: string[]) => {
     for (const n of needles) {
@@ -158,10 +170,20 @@ export async function parseFullModel(modelUrl: string): Promise<ModelFull> {
     }
     return undefined;
   };
-  const incomeGid = findGid('income statement', '1.income', 'income');
-  const cashGid   = findGid('flujos de caja', 'flujos', 'cash');
-  const retGid    = findGid('retornos capital', 'retornos', 'capital');
-  const valGid    = findGid('4.valoracion', 'valoracion');
+  let incomeGid = findGid('income statement', '1.income', 'income');
+  let cashGid   = findGid('flujos de caja', 'flujos', 'cash');
+  let retGid    = findGid('retornos capital', 'retornos', 'capital');
+  let valGid    = findGid('4.valoracion', 'valoracion');
+
+  // Fallback: newer pubhtml exposes no named tabs — only bare gids in document
+  // order. The template order is fixed, so map by position (0..3).
+  if (!incomeGid || !valGid) {
+    const ordered = await fetchOrderedGids(ref);
+    incomeGid = incomeGid ?? ordered[0];
+    cashGid   = cashGid   ?? ordered[1];
+    retGid    = retGid    ?? ordered[2];
+    valGid    = valGid    ?? ordered[3];
+  }
 
   const [income, cash, ret, val] = await Promise.all([
     incomeGid ? fetchCsv(ref, incomeGid) : null,
