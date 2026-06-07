@@ -51,20 +51,22 @@ export async function fetchSheetTabs(pubhtmlUrl: string): Promise<{ name: string
     if (gid && name && !tabs.find(t => t.gid === gid)) tabs.push({ gid, name });
   };
 
-  // Google publishes the tab bar as a <ul id="sheet-menu"> of
-  // <li id="sheet-button-GID"><a href="...gid=GID...">Name</a></li>. Markup varies,
-  // so match each <li id="sheet-button-N"> ... </li> and take its anchor/inner text.
-  const reLi = /id="sheet-button-(\d+)"[\s\S]*?<a\b[^>]*>([\s\S]*?)<\/a>/g;
   let m: RegExpExecArray | null;
-  while ((m = reLi.exec(html)) !== null) add(m[1], m[2]);
 
-  // Fallback: any anchor whose href carries gid=NUMBER, name = anchor text.
+  // PRIMARY: anchors carrying the REAL gid in their href. Note the id in
+  // `sheet-button-N` is often a sequential index, NOT the gid, so href is the
+  // authoritative source for the gid → match it first.
+  const reA = /<a\b[^>]*\bhref="[^"]*[?#&]gid=(\d+)[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+  while ((m = reA.exec(html)) !== null) add(m[1], m[2]);
+
+  // FALLBACK: the <li id="sheet-button-GID"><a>Name</a> tab bar (older markup
+  // where the id genuinely is the gid).
   if (tabs.length === 0) {
-    const reA = /<a\b[^>]*\bhref="[^"]*[?#&]gid=(\d+)[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
-    while ((m = reA.exec(html)) !== null) add(m[1], m[2]);
+    const reLi = /id="sheet-button-(\d+)"[\s\S]*?<a\b[^>]*>([\s\S]*?)<\/a>/g;
+    while ((m = reLi.exec(html)) !== null) add(m[1], m[2]);
   }
 
-  // Last resort: scan for gid=NUMBER anywhere and grab nearby text as the name.
+  // LAST RESORT: scan for gid=NUMBER anywhere and grab nearby text as the name.
   if (tabs.length === 0) {
     const reG = /[?#&]gid=(\d+)[^>]*>([^<]{1,40})</g;
     while ((m = reG.exec(html)) !== null) add(m[1], m[2]);
