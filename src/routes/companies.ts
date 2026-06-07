@@ -8,6 +8,7 @@ import {
 } from '../notionClient';
 import { parseModelFromUrl } from '../services/modelParser';
 import { fetchModelCases, resolveCasesGid, listModelTabs, pickCasesGid } from '../services/modelCases';
+import { parseFullModel } from '../services/modelFull';
 
 const router = Router();
 
@@ -297,6 +298,60 @@ router.post('/:id/model-cases', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[model-cases:save]', err);
     return res.status(500).json({ error: err.message ?? 'Failed to save model cases' });
+  }
+});
+
+// POST /api/companies/:id/parse-model — parse the FULL model (KPIs + valuation table)
+// from the standard template and persist headline multiples, target price, return,
+// CAGR and the KPI series JSON. Drives the cartera columns and the KPIs tab.
+router.post('/:id/parse-model', async (req: Request, res: Response) => {
+  try {
+    const c = await pool.query('SELECT * FROM companies WHERE id = $1', [req.params.id]);
+    if (c.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
+    const company = c.rows[0];
+    if (!company.model_url) return res.status(400).json({ error: 'No model URL set for this company' });
+
+    const full = await parseFullModel(company.model_url);
+
+    // The "Promedio" row is the headline target price + return/CAGR; fall back to
+    // the first method if Promedio isn't present.
+    const avg = full.targetTable.find(t => /promedio/i.test(t.method)) ?? full.targetTable[0];
+    const lastTarget = avg?.targetsByYear?.filter(v => v.value != null).slice(-1)[0]?.value ?? null;
+
+    await pool.query(
+      `UPDATE companies SET
+        model_full = $1,
+        model_ev_per = $2,
+        model_ev_fcf = $3,
+        model_target_price = $4,
+        target_price = COALESCE($4, target_price),
+        model_return = COALESCE($5, model_return),
+        model_cagr = COALESCE($6, model_cagr),
+        updated_at = NOW()
+       WHERE id = $7`,
+      [
+        JSON.stringify(full), full.evPer, full.evFcf, lastTarget,
+        avg?.annualizedReturn ?? null, avg?.cagr5y != null ? avg.cagr5y * 100 : null,
+        req.params.id,
+      ]
+    );
+
+    return res.json({ success: true, ...full });
+  } catch (err: any) {
+    console.error('[parse-model]', err);
+    return res.status(500).json({ error: err.message ?? 'Failed to parse model' });
+  }
+});
+
+// GET /api/companies/:id/model-full — return the stored full-model parse (KPIs tab).
+router.get('/:id/model-full', async (req: Request, res: Response) => {
+  try {
+    const c = await pool.query('SELECT model_full FROM companies WHERE id = $1', [req.params.id]);
+    if (c.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
+    return res.json(c.rows[0].model_full ?? null);
+  } catch (err: any) {
+    console.error('[model-full]', err);
+    return res.status(500).json({ error: err.message ?? 'Failed to fetch model' });
   }
 });
 

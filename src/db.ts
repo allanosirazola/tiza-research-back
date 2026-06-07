@@ -153,6 +153,11 @@ export async function initDb(): Promise<void> {
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_return_cell TEXT;
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_cagr_cell TEXT;
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_cases_gid TEXT;
+    -- Full model parse: headline multiples (from the model, not Yahoo) + KPI series.
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_ev_per NUMERIC;   -- PER ex Cash
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_ev_fcf NUMERIC;   -- EV / FCF
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_target_price NUMERIC; -- avg objetivo
+    ALTER TABLE companies ADD COLUMN IF NOT EXISTS model_full JSONB;        -- KPI series + target table
 
     CREATE TABLE IF NOT EXISTS company_events (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
