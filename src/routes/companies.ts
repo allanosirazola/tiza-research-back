@@ -6,7 +6,6 @@ import {
   fetchPageBlocksCached,
   invalidateCache,
 } from '../notionClient';
-import { parseModelFromUrl } from '../services/modelParser';
 import { fetchModelCases, resolveCasesGid, listModelTabs, pickCasesGid, debugModelTabs } from '../services/modelCases';
 import { parseFullModel } from '../services/modelFull';
 
@@ -206,30 +205,6 @@ router.post('/:id/sync-notion', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/companies/:id/parse-model
-// Body: { url?: string }  — uses company's model_url if no url in body
-router.post('/:id/parse-model', async (req: Request, res: Response) => {
-  try {
-    const company = await pool.query('SELECT * FROM companies WHERE id = $1', [req.params.id]);
-    if (company.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
-
-    const modelUrl = req.body?.url ?? company.rows[0].model_url;
-    if (!modelUrl) return res.status(400).json({ error: 'No model URL provided' });
-
-    // Save the URL if it was provided in body
-    if (req.body?.url) {
-      await pool.query('UPDATE companies SET model_url = $1, updated_at = NOW() WHERE id = $2', [req.body.url, req.params.id]);
-    }
-
-    const kpis = await parseModelFromUrl(modelUrl);
-    await pool.query('UPDATE companies SET model_kpis = $1, updated_at = NOW() WHERE id = $2', [JSON.stringify(kpis), req.params.id]);
-
-    return res.json({ success: true, kpis });
-  } catch (err: any) {
-    console.error('[parse-model]', err);
-    return res.status(500).json({ error: err.message ?? 'Failed to parse model' });
-  }
-});
 
 // GET /api/companies/:id/model-tabs — list the model's sheet tabs (debug detection).
 router.get('/:id/model-tabs', async (req: Request, res: Response) => {
@@ -321,9 +296,14 @@ router.post('/:id/parse-model', async (req: Request, res: Response) => {
     const c = await pool.query('SELECT * FROM companies WHERE id = $1', [req.params.id]);
     if (c.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
     const company = c.rows[0];
-    if (!company.model_url) return res.status(400).json({ error: 'No model URL set for this company' });
+    // Allow passing/overriding the model URL in the body (and persist it).
+    const modelUrl = req.body?.url ?? company.model_url;
+    if (!modelUrl) return res.status(400).json({ error: 'No model URL set for this company' });
+    if (req.body?.url && req.body.url !== company.model_url) {
+      await pool.query('UPDATE companies SET model_url = $1, updated_at = NOW() WHERE id = $2', [req.body.url, req.params.id]);
+    }
 
-    const full = await parseFullModel(company.model_url);
+    const full = await parseFullModel(modelUrl);
 
     // The "Promedio" row is the headline target price + return/CAGR; fall back to
     // the first method if Promedio isn't present.
