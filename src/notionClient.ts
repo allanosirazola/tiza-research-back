@@ -121,18 +121,22 @@ async function convertBlock(block: BlockObjectResponse, depth: number): Promise<
       const rich = block.heading_1.rich_text;
       base.content = richTextToString(rich);
       base.richContent = convertRichText(rich);
+      // Toggle headings keep their section content as children.
+      if (block.has_children && depth > 1) base.children = await fetchBlockChildren(block.id, depth - 1);
       break;
     }
     case 'heading_2': {
       const rich = block.heading_2.rich_text;
       base.content = richTextToString(rich);
       base.richContent = convertRichText(rich);
+      if (block.has_children && depth > 1) base.children = await fetchBlockChildren(block.id, depth - 1);
       break;
     }
     case 'heading_3': {
       const rich = block.heading_3.rich_text;
       base.content = richTextToString(rich);
       base.richContent = convertRichText(rich);
+      if (block.has_children && depth > 1) base.children = await fetchBlockChildren(block.id, depth - 1);
       break;
     }
     case 'toggle': {
