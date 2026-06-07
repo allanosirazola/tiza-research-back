@@ -32,9 +32,19 @@ function toNum(s: string | undefined): number | null {
   if (s == null) return null;
   let c = String(s).replace(/[%€$£\s]/g, '').trim();
   if (!c || c === '-' || c === 'N/A') return null;
-  const lc = c.lastIndexOf(','), ld = c.lastIndexOf('.');
-  if (lc !== -1 && lc > ld) c = c.replace(/\./g, '').replace(',', '.');
-  else c = c.replace(/,/g, '');
+  const hasComma = c.includes(','), hasDot = c.includes('.');
+  if (hasComma && hasDot) {
+    // Both present: the last one is the decimal sep (EU "1.234,56" / US "1,234.56").
+    if (c.lastIndexOf(',') > c.lastIndexOf('.')) c = c.replace(/\./g, '').replace(',', '.');
+    else c = c.replace(/,/g, '');
+  } else if (hasDot) {
+    // Dot only. "1.718"/"1.057"/"10.210" are EU thousands (groups of 3 digits);
+    // "2.4"/"10.82" are decimals. Treat as thousands iff every dot-group is 3 digits.
+    if (/^\d{1,3}(\.\d{3})+$/.test(c)) c = c.replace(/\./g, '');
+  } else if (hasComma) {
+    // Comma only → decimal sep ("2,4") unless it's a thousands group ("1,718").
+    c = /^\d{1,3}(,\d{3})+$/.test(c) ? c.replace(/,/g, '') : c.replace(',', '.');
+  }
   const n = parseFloat(c);
   return isNaN(n) ? null : n;
 }
@@ -48,11 +58,16 @@ async function fetchCsv(ref: SheetRef, gid: string): Promise<string[][] | null> 
   } catch { return null; }
 }
 
-/** Find the row whose first cell matches `label` (normalized, substring). */
-function findRow(grid: string[][], label: string): string[] | null {
+/** Find the row whose first cell matches `label`. Matches the label at the START of
+ *  the (trimmed) cell so "EPS" doesn't hit the units header "(millones, excepto EPS)".
+ *  Set `exact` to require a full match (e.g. distinguish "EPS" from "EPS growth"). */
+function findRow(grid: string[][], label: string, exact = false): string[] | null {
   const want = norm(label);
   for (const row of grid) {
-    if (norm(row[0] ?? '').includes(want)) return row;
+    const cell = norm(row[0] ?? '');
+    if (!cell) continue;
+    if (cell.startsWith('(')) continue; // skip "(millones, excepto EPS)" style headers
+    if (exact ? cell === want : cell.startsWith(want)) return row;
   }
   return null;
 }
@@ -71,9 +86,9 @@ function yearHeader(grid: string[][]): { rowIdx: number; cols: { year: string; i
 /** A labeled KPI time-series: label + {year:value} map. */
 export interface KpiSeries { label: string; values: { year: string; value: number | null }[]; isPct?: boolean; }
 
-function seriesFor(grid: string[][], label: string, isPct = false): KpiSeries | null {
+function seriesFor(grid: string[][], label: string, isPct = false, exact = false): KpiSeries | null {
   const hdr = yearHeader(grid);
-  const row = findRow(grid, label);
+  const row = findRow(grid, label, exact);
   if (!hdr || !row) return null;
   return {
     label,
@@ -146,14 +161,26 @@ function parseValuationTab(grid: string[][]): {
     }
   }
 
-  // Headline multiples come from the "Múltiplos de valoración" block: PER / EV·FCF
-  // (use the "Objetivo" column when present, else NTM).
-  const perRow = findRow(grid, 'per');
-  const evFcfRow = findRow(grid, 'ev / fcf');
-  // columns there are LTM | NTM | Objetivo (B|C|D). Prefer Objetivo (idx 3), else NTM (idx 2).
-  const pick3 = (row: string[] | null) => row ? (toNum(row[3]) ?? toNum(row[2]) ?? toNum(row[1])) : null;
-  const evPer = pick3(perRow);
-  const evFcf = pick3(evFcfRow);
+  // Headline multiples: the CURRENT multiple from the "Múltiplos de valoración"
+  // block, whose columns are LTM(B) | NTM(C) | Objetivo(D). We want the current
+  // multiple (NTM preferred, else LTM) — NOT the user's "Objetivo" input.
+  let mulIdx = -1;
+  for (let i = 0; i < grid.length; i++) {
+    if (norm(grid[i][0] ?? '').includes('multiplos de valoracion')) { mulIdx = i; break; }
+  }
+  const rowIn = (label: string): string[] | null => {
+    const want = norm(label);
+    const from = mulIdx >= 0 ? mulIdx : 0;
+    const to = mulIdx >= 0 ? Math.min(grid.length, mulIdx + 10) : grid.length;
+    for (let i = from; i < to; i++) {
+      if (norm(grid[i][0] ?? '') === want) return grid[i];
+    }
+    return null;
+  };
+  // NTM (idx 2) is the current forward multiple; fall back to LTM (idx 1).
+  const currentMul = (row: string[] | null) => row ? (toNum(row[2]) ?? toNum(row[1])) : null;
+  const evPer = currentMul(rowIn('per'));
+  const evFcf = currentMul(rowIn('ev / fcf'));
 
   return { currentPrice, targetTable, evPer, evFcf };
 }
@@ -195,12 +222,12 @@ export async function parseFullModel(modelUrl: string): Promise<ModelFull> {
   const kpis: KpiSeries[] = [];
   const add = (s: KpiSeries | null) => { if (s) kpis.push(s); };
   if (income) {
-    add(seriesFor(income, 'Sales'));
+    add(seriesFor(income, 'Sales', false, true));
     add(seriesFor(income, 'Y/Y Growth %', true));
     add(seriesFor(income, 'EBITDA margin %', true));
     add(seriesFor(income, 'EBIT margin %', true));
     add(seriesFor(income, 'Margen beneficio neto', true));
-    add(seriesFor(income, 'EPS'));
+    add(seriesFor(income, 'EPS', false, true));
   }
   if (cash) {
     add(seriesFor(cash, 'Free Cash Flow'));

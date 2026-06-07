@@ -16,13 +16,66 @@ router.get('/thesis', async (req: Request, res: Response) => {
   try {
     const url = req.query.url as string;
     if (!url) return res.status(400).json({ error: 'URL is required' });
-    const thesis = await scrapeNotionThesis(url);
+
+    // 1) Try the public scrape (no token). Newer Notion pages return no content this
+    //    way, so 2) fall back to the official Notion API (integration token) — which
+    //    needs the page shared with the integration.
+    let thesis = await scrapeNotionThesis(url).catch(() => null);
+    if (!thesis || thesis.sections.length === 0) {
+      const pageId = extractPageIdFromUrl(url);
+      if (pageId && process.env.NOTION_TOKEN) {
+        try {
+          const [blocks, title] = await Promise.all([
+            fetchPageBlocksCached(pageId),
+            getPageTitle(pageId).catch(() => 'Tesis de Inversión'),
+          ]);
+          const sections = blocksToSections(blocks);
+          if (sections.length) {
+            return res.json({ url, pageId, title, sections, source: 'notion-api' });
+          }
+        } catch (e: any) {
+          // Page not shared with the integration, or token missing.
+          return res.status(409).json({
+            error: 'NOTION_API_FALLBACK_FAILED',
+            detail: e?.message,
+            hint: 'Comparte la página de Notion con tu integración (··· → Conexiones) para leer el contenido.',
+          });
+        }
+      }
+    }
+    if (!thesis || thesis.sections.length === 0) {
+      return res.status(409).json({
+        error: 'EMPTY',
+        hint: 'La API pública de Notion no devuelve el contenido de esta página. Conecta una integración de Notion (NOTION_TOKEN) y comparte la página con ella.',
+      });
+    }
     return res.json(thesis);
   } catch (err: any) {
     console.error('[notion/thesis]', err?.message);
     return res.status(500).json({ error: err?.message ?? 'No se pudo cargar la tesis de Notion' });
   }
 });
+
+/** Flatten Notion API blocks into the collapsible-section shape used by the UI. */
+function blocksToSections(blocks: any[]): { heading: string; level: number; blocks: { id: string; type: string; text: string }[] }[] {
+  const sections: any[] = [];
+  let current: any = { heading: '', level: 1, blocks: [] };
+  const headingLevel: Record<string, number> = { heading_1: 1, heading_2: 2, heading_3: 3 };
+  const textOf = (b: any): string =>
+    (b.richContent?.map((r: any) => r.text).join('') ?? b.content ?? '').trim();
+  for (const b of blocks) {
+    const lvl = headingLevel[b.type];
+    if (lvl) {
+      if (current.blocks.length || current.heading) sections.push(current);
+      current = { heading: textOf(b), level: lvl, blocks: [] };
+    } else {
+      const t = textOf(b);
+      if (t) current.blocks.push({ id: b.id, type: b.type, text: t });
+    }
+  }
+  if (current.blocks.length || current.heading) sections.push(current);
+  return sections;
+}
 
 // GET /api/notion/thesis-debug?url=... — raw recordMap shape for diagnosing.
 router.get('/thesis-debug', async (req: Request, res: Response) => {
