@@ -6,7 +6,7 @@ import {
   invalidateCache,
 } from '../notionClient';
 import { scrapePage } from '../services/pageScraper';
-import { scrapeNotionThesis } from '../services/notionPublic';
+import { scrapeNotionThesis, debugNotionThesis } from '../services/notionPublic';
 
 const router = Router();
 
@@ -21,6 +21,17 @@ router.get('/thesis', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[notion/thesis]', err?.message);
     return res.status(500).json({ error: err?.message ?? 'No se pudo cargar la tesis de Notion' });
+  }
+});
+
+// GET /api/notion/thesis-debug?url=... — raw recordMap shape for diagnosing.
+router.get('/thesis-debug', async (req: Request, res: Response) => {
+  try {
+    const url = req.query.url as string;
+    if (!url) return res.status(400).json({ error: 'URL is required' });
+    return res.json(await debugNotionThesis(url));
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message });
   }
 });
 
