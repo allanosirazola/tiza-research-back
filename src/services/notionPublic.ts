@@ -51,6 +51,24 @@ function blockText(value: any): string {
 
 const HEADING_TYPES: Record<string, number> = { header: 1, sub_header: 2, sub_sub_header: 3 };
 
+/** Fetch real block values by id via Notion's public syncRecordValues API.
+ *  loadPageChunk on newer pages returns empty shells; this returns the content. */
+async function syncRecordValues(ids: string[]): Promise<Record<string, any>> {
+  const out: Record<string, any> = {};
+  // Batch to keep requests small.
+  for (let i = 0; i < ids.length; i += 90) {
+    const batch = ids.slice(i, i + 90);
+    const res = await axios.post(
+      'https://www.notion.so/api/v3/syncRecordValues',
+      { requests: batch.map(id => ({ pointer: { table: 'block', id }, version: -1 })) },
+      { timeout: 20000, headers: { 'User-Agent': UA, 'Content-Type': 'application/json', 'Accept': 'application/json' } },
+    );
+    const recs = (res.data as any)?.recordMap?.block ?? (res.data as any)?.recordMapWithRoles?.block ?? {};
+    Object.assign(out, recs);
+  }
+  return out;
+}
+
 /**
  * Call loadPageChunk repeatedly until the whole page is loaded, then assemble the
  * block list in document order and group it into sections by heading.
@@ -89,11 +107,25 @@ export async function scrapeNotionThesis(pageUrl: string): Promise<ScrapedThesis
     }
   }
 
+  // Newer Notion pages return empty block shells from loadPageChunk (the content is
+  // not inlined). syncRecordValues fetches the real block values by id, so enrich the
+  // recordMap with a second call covering every block we saw.
+  const ids = Object.keys(recordMap);
+  if (ids.length && (recordMap[pageId]?.value?.content ?? []).length === 0) {
+    try {
+      const enriched = await syncRecordValues(ids);
+      Object.assign(recordMap, enriched);
+    } catch { /* best-effort */ }
+  }
+
   const root = recordMap[pageId]?.value;
   if (!root) throw new Error('La página de Notion no es pública o no se pudo leer');
 
   const title = blockText(root) || 'Tesis de Inversión';
-  const order: string[] = root?.content ?? [];
+  // Some pages keep order under content; if still empty, fall back to every block id
+  // (minus the root) in recordMap order.
+  let order: string[] = root?.content ?? [];
+  if (order.length === 0) order = ids.filter(id => id !== pageId);
 
   // Walk top-level content in order; nested children (list items) are appended too.
   const flat: ThesisBlock[] = [];
@@ -138,6 +170,15 @@ export async function debugNotionThesis(pageUrl: string): Promise<any> {
     );
     const block = (res.data as any)?.recordMap?.block ?? {};
     const ids = Object.keys(block);
+    // Also try the enrichment path and show whether it yields real text.
+    let enrichedSample: any = null;
+    try {
+      const enriched = await syncRecordValues(ids.slice(0, 90));
+      const firstWithText = Object.values(enriched).find((b: any) => b?.value?.properties?.title);
+      enrichedSample = firstWithText
+        ? { type: (firstWithText as any).value.type, text: blockText((firstWithText as any).value).slice(0, 80) }
+        : '(syncRecordValues returned no titled blocks)';
+    } catch (e: any) { enrichedSample = `sync error: ${e?.response?.status ?? e?.message}`; }
     const sample: any = {};
     for (const id of ids.slice(0, 6)) {
       const v = block[id]?.value;
@@ -148,6 +189,7 @@ export async function debugNotionThesis(pageUrl: string): Promise<any> {
       rootExists: !!block[pageId]?.value,
       rootType: block[pageId]?.value?.type,
       rootContentLen: (block[pageId]?.value?.content ?? []).length,
+      enrichedSample,
       sample,
     };
   } catch (e: any) {
