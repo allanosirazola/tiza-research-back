@@ -7,6 +7,7 @@ import {
   invalidateCache,
   getPageIcon,
   extractPageIdFromUrl,
+  fetchSeguimiento,
 } from '../notionClient';
 import { fetchFundamentals } from '../services/marketData';
 import { fetchModelCases, resolveCasesGid, listModelTabs, pickCasesGid, debugModelTabs, parseStructuredCases } from '../services/modelCases';
@@ -331,6 +332,12 @@ router.post('/:id/parse-model', async (req: Request, res: Response) => {
     // the first method if Promedio isn't present.
     const avg = full.targetTable.find(t => /promedio/i.test(t.method)) ?? full.targetTable[0];
     const lastTarget = avg?.targetsByYear?.filter(v => v.value != null).slice(-1)[0]?.value ?? null;
+    // Normalize to percent-points: a |v|<=1.5 value is a decimal fraction (0.06→6);
+    // anything larger is already percent (6→6). Prevents the -3 → -300% bug.
+    const toPct = (v: number | null | undefined): number | null =>
+      v == null ? null : (Math.abs(v) <= 1.5 ? v * 100 : v);
+    const modelReturn = toPct(avg?.annualizedReturn);
+    const modelCagr = toPct(avg?.cagr5y);
 
     await pool.query(
       `UPDATE companies SET
@@ -339,13 +346,13 @@ router.post('/:id/parse-model', async (req: Request, res: Response) => {
         model_ev_fcf = $3,
         model_target_price = $4,
         target_price = COALESCE($4, target_price),
-        model_return = COALESCE($5, model_return),
-        model_cagr = COALESCE($6, model_cagr),
+        model_return = $5,
+        model_cagr = $6,
         updated_at = NOW()
        WHERE id = $7`,
       [
         JSON.stringify(full), full.evPer, full.evFcf, lastTarget,
-        avg?.annualizedReturn ?? null, avg?.cagr5y != null ? avg.cagr5y * 100 : null,
+        modelReturn, modelCagr,
         req.params.id,
       ]
     );
@@ -366,6 +373,26 @@ router.get('/:id/model-full', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[model-full]', err);
     return res.status(500).json({ error: err.message ?? 'Failed to fetch model' });
+  }
+});
+
+// GET /api/companies/:id/seguimiento — sub-pages under the Notion "Seguimiento"
+// heading, each parsed into collapsible sections (like the thesis).
+router.get('/:id/seguimiento', async (req: Request, res: Response) => {
+  try {
+    const c = await pool.query('SELECT thesis_url, notion_page_id, notion_page_url FROM companies WHERE id = $1', [req.params.id]);
+    if (c.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
+    const company = c.rows[0];
+    const pageId = company.notion_page_id
+      ?? (company.thesis_url ? extractPageIdFromUrl(company.thesis_url) : null)
+      ?? (company.notion_page_url ? extractPageIdFromUrl(company.notion_page_url) : null);
+    if (!pageId) return res.status(400).json({ error: 'No Notion page set for this company' });
+    if (!process.env.NOTION_TOKEN) return res.status(409).json({ error: 'NOTION_TOKEN not configured' });
+    const items = await fetchSeguimiento(pageId);
+    return res.json({ items });
+  } catch (err: any) {
+    console.error('[seguimiento]', err?.message);
+    return res.status(500).json({ error: err?.message ?? 'Failed to fetch seguimiento' });
   }
 });
 

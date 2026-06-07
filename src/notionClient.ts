@@ -264,6 +264,76 @@ export async function fetchPageBlocks(pageId: string): Promise<NotionBlock[]> {
   return fetchBlockChildren(pageId, 4);
 }
 
+/* ─── Seguimiento: sub-pages under the "Seguimiento" heading ─────────────────── */
+
+export interface ThesisSectionOut { heading: string; level: number; blocks: { id: string; type: string; text: string; url?: string }[]; }
+export interface SeguimientoItem { id: string; title: string; sections: ThesisSectionOut[]; }
+
+const HEADING_LVL: Record<string, number> = { heading_1: 1, heading_2: 2, heading_3: 3 };
+const normTxt = (s: string) => (s ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+
+/** Flatten NotionBlocks into collapsible sections (recurses into children). */
+export function blocksToThesisSections(blocks: NotionBlock[]): ThesisSectionOut[] {
+  const sections: ThesisSectionOut[] = [];
+  let current: ThesisSectionOut = { heading: '', level: 1, blocks: [] };
+  const flush = () => { if (current.blocks.length || current.heading) sections.push(current); };
+  const textOf = (b: NotionBlock) => (b.richContent?.map(r => r.text).join('') || b.content || '').trim();
+  const walk = (list: NotionBlock[]) => {
+    for (const b of list) {
+      const lvl = HEADING_LVL[b.type];
+      if (lvl) {
+        flush();
+        current = { heading: textOf(b), level: lvl, blocks: [] };
+        if (b.children?.length) walk(b.children);
+      } else if (b.type === 'image') {
+        current.blocks.push({ id: b.id, type: 'image', text: b.caption ?? '', url: b.url });
+      } else {
+        const t = textOf(b);
+        if (t) current.blocks.push({ id: b.id, type: b.type, text: t, url: b.url });
+        if (b.children?.length) walk(b.children);
+      }
+    }
+  };
+  walk(blocks);
+  flush();
+  return sections;
+}
+
+/** Find the "Seguimiento" heading and return each sub-page under it, parsed. */
+export async function fetchSeguimiento(pageId: string): Promise<SeguimientoItem[]> {
+  const blocks = await fetchPageBlocks(pageId);
+
+  // Locate the "Seguimiento" heading and collect child_page blocks that belong to it:
+  // either nested as its children (toggle-heading) or as following siblings up to the
+  // next heading of the same/higher level.
+  const childPages: NotionBlock[] = [];
+  let segIdx = -1, segLevel = 0;
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (HEADING_LVL[b.type] && normTxt((b.richContent?.map(r => r.text).join('') || b.content || '')).includes('seguimiento')) {
+      segIdx = i; segLevel = HEADING_LVL[b.type];
+      for (const ch of (b.children ?? [])) if (ch.type === 'child_page') childPages.push(ch);
+      break;
+    }
+  }
+  if (segIdx >= 0) {
+    for (let i = segIdx + 1; i < blocks.length; i++) {
+      const b = blocks[i];
+      if (HEADING_LVL[b.type] && HEADING_LVL[b.type] <= segLevel) break;
+      if (b.type === 'child_page') childPages.push(b);
+    }
+  }
+
+  const items: SeguimientoItem[] = [];
+  for (const p of childPages) {
+    try {
+      const sub = await fetchPageBlocks(p.id);
+      items.push({ id: p.id, title: p.title || 'Seguimiento', sections: blocksToThesisSections(sub) });
+    } catch { /* sub-page not shared with the integration */ }
+  }
+  return items;
+}
+
 export async function fetchPageBlocksCached(pageId: string): Promise<NotionBlock[]> {
   const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour
 
