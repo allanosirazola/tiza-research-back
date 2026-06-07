@@ -61,7 +61,30 @@ function parseRow(line: string): string[] {
 }
 
 export function parseGrid(csv: string): string[][] {
-  return csv.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').map(l => parseRow(l).map(c => c.trim()));
+  // Tokenize the whole CSV respecting quoted newlines, so multiline cells (e.g. a
+  // "CAGR\n5 años" header) don't split a row and shift its columns.
+  const rows: string[][] = [];
+  let cells: string[] = [];
+  let cur = '';
+  let inQ = false;
+  const t = csv.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (ch === '"') {
+      if (inQ && t[i + 1] === '"') { cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (ch === ',' && !inQ) {
+      cells.push(cur); cur = '';
+    } else if (ch === '\n' && !inQ) {
+      cells.push(cur); rows.push(cells.map(c => c.trim())); cells = []; cur = '';
+    } else if (ch === '\n' && inQ) {
+      cur += ' ';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur !== '' || cells.length) { cells.push(cur); rows.push(cells.map(c => c.trim())); }
+  return rows;
 }
 
 /** Convert an A1 reference (e.g. "H10", "AA3") to zero-based [row, col]. */
