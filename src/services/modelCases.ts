@@ -1,4 +1,5 @@
 import axios from 'axios';
+import * as cheerio from 'cheerio';
 import { fetchSheetTabs } from './sheetsSync';
 
 /**
@@ -99,23 +100,53 @@ function tabListUrls(ref: SheetRef): string[] {
   ];
 }
 
-function parseTabsFromHtml(html: string): { name: string; gid: string }[] {
+function decodeEntities(s: string): string {
+  return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
+}
+
+export function parseTabsFromHtml(htmlRaw: string): { name: string; gid: string }[] {
+  const html = decodeEntities(htmlRaw);
   const tabs: { name: string; gid: string }[] = [];
-  // Strategy 1: Google's tab bar — <li id="sheet-button-GID">…<a>Name</a>.
-  const reLi = /id="sheet-button-(\d+)"[\s\S]*?>([^<]{1,60})</g;
+  const add = (gid: string, rawName: string) => {
+    const name = rawName.replace(/<[^>]+>/g, '').trim();
+    if (gid && name && !tabs.find(t => t.gid === gid)) tabs.push({ gid, name });
+  };
   let m: RegExpExecArray | null;
-  while ((m = reLi.exec(html)) !== null) {
-    const name = m[2].trim();
-    if (name && !tabs.find(t => t.gid === m![1])) tabs.push({ gid: m[1], name });
-  }
-  // Strategy 2: any anchor carrying a gid.
-  if (tabs.length === 0) {
-    const reA = /[?#&]gid=(\d+)[^>]*>\s*([^<]{1,60}?)\s*</g;
-    while ((m = reA.exec(html)) !== null) {
-      const name = m[2].trim();
-      if (name && !tabs.find(t => t.gid === m![1])) tabs.push({ gid: m[1], name });
-    }
-  }
+
+  // 1) cheerio on the published tab bar (most reliable — same as the cartera path).
+  try {
+    const $ = cheerio.load(htmlRaw);
+    $('#sheet-menu li, ul.sheets li, li[id^="sheet-button"]').each((_, el) => {
+      const $el = $(el);
+      const href = $el.find('a').attr('href') ?? '';
+      const gid = (href.match(/[?#&]gid=(\d+)/) ?? [])[1] ?? ($el.attr('id')?.match(/(\d+)/) ?? [])[1];
+      const name = $el.find('a').text() || $el.text();
+      if (gid) add(gid, name);
+    });
+    if (tabs.length) return tabs;
+    // Any anchor anywhere carrying a gid.
+    $('a[href*="gid="]').each((_, el) => {
+      const href = $(el).attr('href') ?? '';
+      const gid = (href.match(/[?#&]gid=(\d+)/) ?? [])[1];
+      if (gid) add(gid, $(el).text());
+    });
+    if (tabs.length) return tabs;
+  } catch { /* fall through to regex */ }
+
+  // 2) regex: anchor href with gid → name.
+  const reA = /<a\b[^>]*\bhref="[^"]*[?#&]gid=(\d+)[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+  while ((m = reA.exec(html)) !== null) add(m[1], m[2]);
+  if (tabs.length) return tabs;
+
+  // 3) regex: <li id="sheet-button-GID">…Name.
+  const reLi = /id="sheet-button-(\d+)"[\s\S]*?>([^<]{1,80})</g;
+  while ((m = reLi.exec(html)) !== null) add(m[1], m[2]);
+  if (tabs.length) return tabs;
+
+  // 4) last resort: gid=N anywhere followed by short text.
+  const reG = /[?#&]gid=(\d+)[^>]*>\s*([^<]{1,80}?)\s*</g;
+  while ((m = reG.exec(html)) !== null) add(m[1], m[2]);
   return tabs;
 }
 
@@ -172,6 +203,30 @@ export async function resolveCasesGid(modelUrl: string): Promise<string | undefi
 /** Public: list a model's tabs (for the UI selector / debugging detection). */
 export async function listModelTabs(modelUrl: string): Promise<{ name: string; gid: string }[]> {
   return fetchTabs(extractPubKey(modelUrl));
+}
+
+/** Debug: fetch the pubhtml and return tabs + an HTML snippet around the first
+ *  "gid=" / "sheet-button" so we can see Google's real markup when parsing fails. */
+export async function debugModelTabs(modelUrl: string): Promise<any> {
+  const ref = extractPubKey(modelUrl);
+  const out: any = { ref, attempts: [] };
+  for (const url of tabListUrls(ref)) {
+    try {
+      const res = await axios.get<string>(url, {
+        timeout: 20000, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TizaResearch/1.0)' },
+      });
+      const html = res.data as string;
+      const tabs = parseTabsFromHtml(html);
+      const idx = html.search(/sheet-button|[?#&]gid=|sheet-menu/);
+      out.attempts.push({
+        url, status: 200, length: html.length, tabsFound: tabs.length, tabs,
+        snippet: idx >= 0 ? html.slice(Math.max(0, idx - 200), idx + 600) : html.slice(0, 800),
+      });
+    } catch (e: any) {
+      out.attempts.push({ url, status: e?.response?.status ?? null, error: e?.message });
+    }
+  }
+  return out;
 }
 
 export async function fetchModelCases(

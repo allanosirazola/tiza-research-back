@@ -7,7 +7,7 @@ import {
   invalidateCache,
 } from '../notionClient';
 import { parseModelFromUrl } from '../services/modelParser';
-import { fetchModelCases, resolveCasesGid, listModelTabs, pickCasesGid } from '../services/modelCases';
+import { fetchModelCases, resolveCasesGid, listModelTabs, pickCasesGid, debugModelTabs } from '../services/modelCases';
 import { parseFullModel } from '../services/modelFull';
 
 const router = Router();
@@ -244,6 +244,18 @@ router.get('/:id/model-tabs', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[model-tabs]', err);
     return res.status(500).json({ error: err.message ?? 'Failed to list model tabs' });
+  }
+});
+
+// GET /api/companies/:id/model-debug — raw pubhtml snippet to diagnose tab parsing.
+router.get('/:id/model-debug', async (req: Request, res: Response) => {
+  try {
+    const c = await pool.query('SELECT model_url FROM companies WHERE id = $1', [req.params.id]);
+    if (c.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
+    if (!c.rows[0].model_url) return res.status(400).json({ error: 'No model URL set' });
+    return res.json(await debugModelTabs(c.rows[0].model_url));
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message ?? 'debug failed' });
   }
 });
 
