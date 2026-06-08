@@ -320,12 +320,10 @@ function dbPageTitle(page: any): string {
   return '';
 }
 
-/** Return all sub-pages of a Notion page, each parsed into sections.
- *  Used for the Sectores / Formación / Informes anuales sections.
- *  Handles sub-pages at any nesting depth (columns/toggles/headings) AND pages
- *  that live inside an inline database. Sub-pages we cannot read are still listed
- *  (empty sections) so the user keeps the title + "open in Notion" link. */
-export async function fetchNotionChildren(pageId: string): Promise<SeguimientoItem[]> {
+/** List a Notion page's sub-pages (id + title) WITHOUT fetching their content.
+ *  Fast: one block-list call per container. Handles sub-pages at any nesting depth
+ *  (columns/toggles/headings) and pages inside an inline database. */
+export async function listNotionChildPages(pageId: string): Promise<{ id: string; title: string }[]> {
   const notion = getNotionClient();
   const pageRefs: { id: string; title: string }[] = [];
   const dbRefs: string[] = [];
@@ -334,7 +332,6 @@ export async function fetchNotionChildren(pageId: string): Promise<SeguimientoIt
     'heading_1', 'heading_2', 'heading_3', 'bulleted_list_item', 'numbered_list_item',
   ]);
 
-  // Walk the block tree collecting child_page + child_database refs.
   async function scan(blockId: string, depth: number) {
     if (depth <= 0) return;
     let cursor: string | undefined;
@@ -373,14 +370,26 @@ export async function fetchNotionChildren(pageId: string): Promise<SeguimientoIt
     } catch { /* database not shared with the integration */ }
   }
 
-  const items: SeguimientoItem[] = [];
+  // De-duplicate.
   const seen = new Set<string>();
-  for (const ref of pageRefs) {
-    if (seen.has(ref.id)) continue;
-    seen.add(ref.id);
+  return pageRefs.filter(r => (seen.has(r.id) ? false : (seen.add(r.id), true)));
+}
+
+/** Parse a single Notion page into collapsible sections. */
+export async function fetchNotionPageSections(pageId: string): Promise<ThesisSectionOut[]> {
+  const blocks = await fetchPageBlocks(pageId);
+  return blocksToThesisSections(blocks);
+}
+
+/** Return all sub-pages of a Notion page, each parsed into sections.
+ *  NOTE: prefer listNotionChildPages + lazy per-page fetch for large sections —
+ *  fetching every page's content upfront can exceed the edge gateway timeout. */
+export async function fetchNotionChildren(pageId: string): Promise<SeguimientoItem[]> {
+  const refs = await listNotionChildPages(pageId);
+  const items: SeguimientoItem[] = [];
+  for (const ref of refs) {
     try {
-      const sub = await fetchPageBlocks(ref.id);
-      items.push({ id: ref.id, title: ref.title, sections: blocksToThesisSections(sub) });
+      items.push({ id: ref.id, title: ref.title, sections: await fetchNotionPageSections(ref.id) });
     } catch {
       items.push({ id: ref.id, title: ref.title, sections: [] }); // not shared → keep title + link
     }
