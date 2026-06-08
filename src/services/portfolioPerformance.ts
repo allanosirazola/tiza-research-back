@@ -79,6 +79,7 @@ export interface PortfolioPosition {
   entry_price?: number;
   entry_date?: string;
   current_price?: number;
+  day_change_pct?: number;  // today's price move % (from price_change_1d)
   target_price?: number;
   shares?: number;          // "Cantidad" from the year sheet
   sheet_value?: number;     // "Valor a día de hoy" from the sheet (weight fallback)
@@ -152,7 +153,7 @@ function isCashPosition(pos: PortfolioPosition): boolean {
 export async function getPortfolioSummary(): Promise<PortfolioSummary> {
   const result = await pool.query(
     `SELECT id, name, ticker, sector, currency, entry_price, entry_date,
-            current_price, target_price, position_size, shares, sheet_value,
+            current_price, price_change_1d, target_price, position_size, shares, sheet_value,
             pnl_value, pnl_pct, dividends,
             model_return, model_cagr, model_ev_per, model_ev_fcf, model_target_price,
             pe_ratio, ev_ebitda, conviction, status
@@ -210,6 +211,7 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
       entry_price: entryPrice,
       entry_date: entryDate,
       current_price: currentPrice,
+      day_change_pct: r.price_change_1d != null ? Number(r.price_change_1d) : undefined,
       target_price: effectiveTarget,
       shares,
       sheet_value: sheetValue,
