@@ -310,17 +310,80 @@ export function blocksToThesisSections(blocks: NotionBlock[]): ThesisSectionOut[
   return sections;
 }
 
-/** Return all top-level child pages of a Notion page, each parsed into sections.
- *  Used for the Sectores / Formación / Informes anuales sections. */
+/** Title of a database page (from its "title"-typed property). */
+function dbPageTitle(page: any): string {
+  const props = page?.properties ?? {};
+  for (const key of Object.keys(props)) {
+    const p = props[key];
+    if (p?.type === 'title') return (p.title ?? []).map((t: any) => t.plain_text).join('');
+  }
+  return '';
+}
+
+/** Return all sub-pages of a Notion page, each parsed into sections.
+ *  Used for the Sectores / Formación / Informes anuales sections.
+ *  Handles sub-pages at any nesting depth (columns/toggles/headings) AND pages
+ *  that live inside an inline database. Sub-pages we cannot read are still listed
+ *  (empty sections) so the user keeps the title + "open in Notion" link. */
 export async function fetchNotionChildren(pageId: string): Promise<SeguimientoItem[]> {
-  const blocks = await fetchPageBlocks(pageId);
-  const items: SeguimientoItem[] = [];
-  for (const b of blocks) {
-    if (b.type !== 'child_page') continue;
+  const notion = getNotionClient();
+  const pageRefs: { id: string; title: string }[] = [];
+  const dbRefs: string[] = [];
+  const CONTAINERS = new Set([
+    'column_list', 'column', 'toggle', 'synced_block', 'callout',
+    'heading_1', 'heading_2', 'heading_3', 'bulleted_list_item', 'numbered_list_item',
+  ]);
+
+  // Walk the block tree collecting child_page + child_database refs.
+  async function scan(blockId: string, depth: number) {
+    if (depth <= 0) return;
+    let cursor: string | undefined;
+    do {
+      let resp;
+      try {
+        resp = await notion.blocks.children.list({ block_id: blockId, start_cursor: cursor, page_size: 100 });
+      } catch (err: any) {
+        if (err?.code === 'object_not_found' || err?.code === 'validation_error') return;
+        throw err;
+      }
+      for (const b of resp.results) {
+        if (!isFullBlock(b)) continue;
+        if (b.type === 'child_page') {
+          pageRefs.push({ id: b.id, title: (b as any).child_page.title || 'Página' });
+        } else if (b.type === 'child_database') {
+          dbRefs.push(b.id);
+        } else if ((b as any).has_children && CONTAINERS.has(b.type)) {
+          await scan(b.id, depth - 1);
+        }
+      }
+      cursor = resp.has_more ? (resp.next_cursor ?? undefined) : undefined;
+    } while (cursor);
+  }
+  await scan(pageId, 4);
+
+  // Pages contained in inline databases.
+  for (const dbId of dbRefs) {
     try {
-      const sub = await fetchPageBlocks(b.id);
-      items.push({ id: b.id, title: b.title || 'Página', sections: blocksToThesisSections(sub) });
-    } catch { /* sub-page not shared with the integration */ }
+      let cursor: string | undefined;
+      do {
+        const q: any = await notion.databases.query({ database_id: dbId, start_cursor: cursor, page_size: 100 });
+        for (const p of q.results) pageRefs.push({ id: p.id, title: dbPageTitle(p) || 'Página' });
+        cursor = q.has_more ? (q.next_cursor ?? undefined) : undefined;
+      } while (cursor);
+    } catch { /* database not shared with the integration */ }
+  }
+
+  const items: SeguimientoItem[] = [];
+  const seen = new Set<string>();
+  for (const ref of pageRefs) {
+    if (seen.has(ref.id)) continue;
+    seen.add(ref.id);
+    try {
+      const sub = await fetchPageBlocks(ref.id);
+      items.push({ id: ref.id, title: ref.title, sections: blocksToThesisSections(sub) });
+    } catch {
+      items.push({ id: ref.id, title: ref.title, sections: [] }); // not shared → keep title + link
+    }
   }
   return items;
 }
