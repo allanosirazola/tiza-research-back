@@ -169,10 +169,29 @@ router.get('/children', async (req: Request, res: Response) => {
     const pageId = extractPageIdFromUrl(url);
     if (!pageId) return res.status(400).json({ error: 'URL de Notion no válida' });
     const items = await fetchNotionChildren(pageId);
+    console.log(`[notion/children] ${pageId} → ${items.length} item(s)`);
     return res.json({ items });
   } catch (err: any) {
     console.error('[notion/children]', err?.message);
     return res.status(500).json({ error: err?.message ?? 'Failed to fetch Notion children' });
+  }
+});
+
+// GET /api/notion/children-debug?url=... — top-level block types of a page (diagnostics).
+router.get('/children-debug', async (req: Request, res: Response) => {
+  try {
+    const url = req.query.url as string;
+    const pageId = extractPageIdFromUrl(url || '');
+    if (!pageId) return res.status(400).json({ error: 'URL de Notion no válida' });
+    const blocks = await fetchPageBlocksCached(pageId);
+    const types: Record<string, number> = {};
+    const summary = blocks.map((b) => {
+      types[b.type] = (types[b.type] ?? 0) + 1;
+      return { type: b.type, title: b.title ?? b.content?.slice(0, 40) ?? '', children: b.children?.length ?? 0 };
+    });
+    return res.json({ pageId, types, blocks: summary });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message });
   }
 });
 
