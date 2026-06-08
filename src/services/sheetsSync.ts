@@ -339,6 +339,9 @@ export interface SyncResult {
   pricesUpdated?: number; // companies whose live price was refreshed during sync
   purged?: number;      // junk rows (summary/number/fragment) removed from the DB
   totalPnl?: number | null; // portfolio P&L read from the sheet's pnl cell (e.g. P26)
+  portfolioReturn?: number | null; // "Return on assets" — the portfolio's YTD return %
+  moneyInvested?: number | null;
+  startValue?: number | null;
 }
 
 export async function syncFromSheets(
@@ -413,7 +416,11 @@ export async function syncFromSheets(
     if (result.totalPnl == null && opts.pnlCell) {
       result.totalPnl = cellNum(fullGrid, opts.pnlCell);
     }
-    console.log(`[sync] Total P&L (Win/Lost ROA / ${opts.pnlCell ?? '—'}) =`, result.totalPnl);
+    // The portfolio's own performance figures from the summary block.
+    result.portfolioReturn = findLabeledValue(fullGrid, ['return on assets', 'roa', 'rentabilidad cartera', 'retorno cartera']);
+    result.moneyInvested  = findLabeledValue(fullGrid, ['money invested', 'dinero invertido', 'capital invertido']);
+    result.startValue     = findLabeledValue(fullGrid, ['start value', 'valor inicio', 'valor inicial']);
+    console.log(`[sync] Win/Lost ROA=${result.totalPnl} · ReturnOnAssets=${result.portfolioReturn} · MoneyInvested=${result.moneyInvested}`);
   }
 
   console.log('[sync] Raw headers:', rawHeaders.join(' | '));
@@ -597,19 +604,25 @@ export async function syncFromSheets(
     }
   }
 
-  // Persist the sheet's authoritative total P&L into the current-year history row so
-  // the Cartera header shows the right number instead of a stale manual estimate.
-  if (result.totalPnl != null) {
+  // Persist the sheet's own performance figures (P&L, return, money invested) into the
+  // current-year history row so the Cartera header shows the real numbers instead of a
+  // stale manual estimate. "Return on assets" can be a fraction (0.0118) or percent.
+  if (result.totalPnl != null || result.portfolioReturn != null || result.moneyInvested != null) {
     try {
       const year = new Date().getFullYear();
+      const ret = result.portfolioReturn == null ? null
+        : (Math.abs(result.portfolioReturn) <= 1.5 ? result.portfolioReturn * 100 : result.portfolioReturn);
       await pool.query(
-        `INSERT INTO portfolio_performance_history (period, period_type, win_lose_usd, notes)
-         VALUES ($1, 'annual', $2, 'Sincronizado desde la hoja')
-         ON CONFLICT (period, period_type) DO UPDATE SET win_lose_usd = EXCLUDED.win_lose_usd`,
-        [`${year} YTD`, result.totalPnl]
+        `INSERT INTO portfolio_performance_history (period, period_type, win_lose_usd, portfolio_return, money_invested, notes)
+         VALUES ($1, 'annual', $2, $3, $4, 'Sincronizado desde la hoja')
+         ON CONFLICT (period, period_type) DO UPDATE SET
+           win_lose_usd     = COALESCE(EXCLUDED.win_lose_usd, portfolio_performance_history.win_lose_usd),
+           portfolio_return = COALESCE(EXCLUDED.portfolio_return, portfolio_performance_history.portfolio_return),
+           money_invested   = COALESCE(EXCLUDED.money_invested, portfolio_performance_history.money_invested)`,
+        [`${year} YTD`, result.totalPnl, ret, result.moneyInvested]
       );
     } catch (e: any) {
-      result.errors.push(`No se pudo guardar el P&L total: ${e?.message ?? e}`);
+      result.errors.push(`No se pudo guardar el rendimiento: ${e?.message ?? e}`);
     }
   }
 

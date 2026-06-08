@@ -19,6 +19,7 @@ import portfolioRouter from './routes/portfolio';
 import { seedPortfolioHistory } from './services/portfolioSeed';
 import { refreshAllCompanyPrices } from './services/marketData';
 import { refreshAllEvents } from './services/eventsFetcher';
+import { snapshotMonthlyPortfolio } from './services/portfolioPerformance';
 import { checkAndFireAlerts, generateWeeklySummary } from './services/alerts';
 
 const app = express();
@@ -68,6 +69,17 @@ cron.schedule('0 * * * *', async () => {
     await checkAndFireAlerts();
   } catch (err) {
     console.error('[cron] Price refresh/alert check failed:', err);
+  }
+});
+
+// 1st of each month at 7am: Factset-style portfolio snapshot for the prior month.
+cron.schedule('0 7 1 * *', async () => {
+  console.log('[cron] Monthly portfolio snapshot...');
+  try {
+    const r = await snapshotMonthlyPortfolio();
+    console.log(`[cron] Snapshot stored for ${r.period} (value=${r.value})`);
+  } catch (err) {
+    console.error('[cron] Monthly snapshot failed:', err);
   }
 });
 

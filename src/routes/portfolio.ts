@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import axios from 'axios';
-import { getPortfolioSummary, getPeriodReturns } from '../services/portfolioPerformance';
+import { getPortfolioSummary, getPeriodReturns, snapshotMonthlyPortfolio } from '../services/portfolioPerformance';
 import { syncFromSheets, fetchSheetTabs } from '../services/sheetsSync';
 import pool from '../db';
 
@@ -39,6 +39,12 @@ router.get('/performance', async (req: Request, res: Response) => {
     console.error(err);
     return res.status(500).json({ error: 'Failed to calculate portfolio performance' });
   }
+});
+
+// POST /api/portfolio/snapshot — run the monthly snapshot now (manual trigger).
+router.post('/snapshot', async (_req: Request, res: Response) => {
+  try { return res.json(await snapshotMonthlyPortfolio()); }
+  catch (err: any) { console.error('[snapshot]', err?.message); return res.status(500).json({ error: err?.message ?? 'Failed' }); }
 });
 
 // GET /api/portfolio/history

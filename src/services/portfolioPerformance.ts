@@ -1,5 +1,42 @@
 import pool from '../db';
 
+/**
+ * Factset-style monthly snapshot: on the 1st of each month, record the portfolio's
+ * state (total value, YTD return, P&L) for the month that just ended into
+ * portfolio_performance_history (period_type 'monthly'). Idempotent per period.
+ */
+export async function snapshotMonthlyPortfolio(): Promise<{ period: string; value: number | null }> {
+  const summary = await getPortfolioSummary();
+  const totalValue = summary.positions.reduce((s, p) => s + (p.market_value ?? 0), 0) || null;
+
+  // Latest annual figures (return / P&L / money invested) from the sheet sync.
+  const hist = await pool.query(
+    `SELECT portfolio_return, win_lose_usd, money_invested FROM portfolio_performance_history
+     WHERE period_type = 'annual' ORDER BY period_end DESC NULLS LAST, period DESC LIMIT 1`
+  );
+  const h = hist.rows[0] ?? {};
+
+  // The month that just ended (snapshot taken on day 1).
+  const now = new Date();
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const period = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+  const periodStart = `${period}-01`;
+  const periodEnd = new Date(prev.getFullYear(), prev.getMonth() + 1, 0).toISOString().slice(0, 10);
+
+  await pool.query(
+    `INSERT INTO portfolio_performance_history
+       (period, period_type, period_start, period_end, portfolio_return, win_lose_usd, money_invested, portfolio_value_end, notes)
+     VALUES ($1, 'monthly', $2, $3, $4, $5, $6, $7, 'Snapshot mensual automático')
+     ON CONFLICT (period, period_type) DO UPDATE SET
+       portfolio_return = EXCLUDED.portfolio_return,
+       win_lose_usd = EXCLUDED.win_lose_usd,
+       money_invested = EXCLUDED.money_invested,
+       portfolio_value_end = EXCLUDED.portfolio_value_end`,
+    [period, periodStart, periodEnd, h.portfolio_return ?? null, h.win_lose_usd ?? null, h.money_invested ?? null, totalValue]
+  );
+  return { period, value: totalValue };
+}
+
 // Note: yahoo-finance2 v2.14.0 only ships quote+autoc; no historical module.
 // Benchmark history is fetched via the Yahoo Finance v8 chart API directly.
 const BENCH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
