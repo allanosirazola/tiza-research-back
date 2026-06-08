@@ -7,7 +7,7 @@ import {
 } from '../notionClient';
 import { scrapePage } from '../services/pageScraper';
 import { scrapeNotionThesis, debugNotionThesis } from '../services/notionPublic';
-import { fetchNotionChildren } from '../notionClient';
+import { fetchNotionChildren, listNotionChildPages, fetchNotionPageSections } from '../notionClient';
 import pool from '../db';
 
 const router = Router();
@@ -159,8 +159,10 @@ router.post('/import', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/notion/children?url=... — all child pages of a Notion page, each parsed
-// into collapsible sections (for Sectores / Formación / Informes anuales).
+// GET /api/notion/children?url=... — LIST sub-pages (id + title only, no content).
+// Fast: avoids fetching every page upfront (which can exceed the edge gateway timeout).
+// Each page's sections are loaded lazily via /api/notion/page-sections.
+// ?full=1 still returns parsed sections inline (used where the list is small).
 router.get('/children', async (req: Request, res: Response) => {
   try {
     const url = req.query.url as string;
@@ -168,12 +170,31 @@ router.get('/children', async (req: Request, res: Response) => {
     if (!process.env.NOTION_TOKEN) return res.status(409).json({ error: 'NOTION_TOKEN not configured' });
     const pageId = extractPageIdFromUrl(url);
     if (!pageId) return res.status(400).json({ error: 'URL de Notion no válida' });
-    const items = await fetchNotionChildren(pageId);
-    console.log(`[notion/children] ${pageId} → ${items.length} item(s)`);
+    if (req.query.full === '1') {
+      const items = await fetchNotionChildren(pageId);
+      return res.json({ items });
+    }
+    const refs = await listNotionChildPages(pageId);
+    const items = refs.map(r => ({ id: r.id, title: r.title, sections: [] as never[] }));
+    console.log(`[notion/children] ${pageId} → ${items.length} sub-page(s)`);
     return res.json({ items });
   } catch (err: any) {
     console.error('[notion/children]', err?.message);
     return res.status(500).json({ error: err?.message ?? 'Failed to fetch Notion children' });
+  }
+});
+
+// GET /api/notion/page-sections?pageId=... — parsed sections for ONE sub-page (lazy).
+router.get('/page-sections', async (req: Request, res: Response) => {
+  try {
+    const pageId = (req.query.pageId as string)?.replace(/-/g, '');
+    if (!pageId) return res.status(400).json({ error: 'pageId is required' });
+    const sections = await fetchNotionPageSections(pageId);
+    return res.json({ pageId, sections });
+  } catch (err: any) {
+    if (err?.code === 'object_not_found') return res.status(404).json({ error: 'Página no compartida con la integración', sections: [] });
+    console.error('[notion/page-sections]', err?.message);
+    return res.status(500).json({ error: err?.message ?? 'Failed to fetch page sections' });
   }
 });
 
