@@ -299,6 +299,21 @@ export function blocksToThesisSections(blocks: NotionBlock[]): ThesisSectionOut[
   return sections;
 }
 
+/** Return all top-level child pages of a Notion page, each parsed into sections.
+ *  Used for the Sectores / Formación / Informes anuales sections. */
+export async function fetchNotionChildren(pageId: string): Promise<SeguimientoItem[]> {
+  const blocks = await fetchPageBlocks(pageId);
+  const items: SeguimientoItem[] = [];
+  for (const b of blocks) {
+    if (b.type !== 'child_page') continue;
+    try {
+      const sub = await fetchPageBlocks(b.id);
+      items.push({ id: b.id, title: b.title || 'Página', sections: blocksToThesisSections(sub) });
+    } catch { /* sub-page not shared with the integration */ }
+  }
+  return items;
+}
+
 /** Find the "Seguimiento" heading and return each sub-page under it, parsed. */
 export async function fetchSeguimiento(pageId: string): Promise<SeguimientoItem[]> {
   const blocks = await fetchPageBlocks(pageId);

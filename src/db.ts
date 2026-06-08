@@ -181,6 +181,13 @@ export async function initDb(): Promise<void> {
     -- Auto-discovered Investor Relations events page.
     ALTER TABLE companies ADD COLUMN IF NOT EXISTS ir_events_url TEXT;
 
+    -- Key/value app settings (e.g. Notion parent URLs for Sectores/Formación/Informes).
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS transcripts (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,

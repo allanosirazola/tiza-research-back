@@ -16,6 +16,7 @@ import eventsRouter from './routes/events';
 import eventsGlobalRouter from './routes/eventsGlobal';
 import transcriptsRouter from './routes/transcripts';
 import portfolioRouter from './routes/portfolio';
+import settingsRouter from './routes/settings';
 import { seedPortfolioHistory } from './services/portfolioSeed';
 import { refreshAllCompanyPrices } from './services/marketData';
 import { refreshAllEvents } from './services/eventsFetcher';
@@ -54,6 +55,7 @@ app.use('/api/companies/:companyId/events', eventsRouter);
 app.use('/api/events', eventsGlobalRouter);
 app.use('/api/companies/:companyId/transcripts', transcriptsRouter);
 app.use('/api/portfolio', portfolioRouter);
+app.use('/api/settings', settingsRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

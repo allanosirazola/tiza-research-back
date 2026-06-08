@@ -7,6 +7,8 @@ import {
 } from '../notionClient';
 import { scrapePage } from '../services/pageScraper';
 import { scrapeNotionThesis, debugNotionThesis } from '../services/notionPublic';
+import { fetchNotionChildren } from '../notionClient';
+import pool from '../db';
 
 const router = Router();
 
@@ -154,6 +156,23 @@ router.post('/import', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error(err);
     return res.status(500).json({ error: 'Failed to import Notion page', details: err?.message });
+  }
+});
+
+// GET /api/notion/children?url=... — all child pages of a Notion page, each parsed
+// into collapsible sections (for Sectores / Formación / Informes anuales).
+router.get('/children', async (req: Request, res: Response) => {
+  try {
+    const url = req.query.url as string;
+    if (!url) return res.status(400).json({ error: 'URL is required' });
+    if (!process.env.NOTION_TOKEN) return res.status(409).json({ error: 'NOTION_TOKEN not configured' });
+    const pageId = extractPageIdFromUrl(url);
+    if (!pageId) return res.status(400).json({ error: 'URL de Notion no válida' });
+    const items = await fetchNotionChildren(pageId);
+    return res.json({ items });
+  } catch (err: any) {
+    console.error('[notion/children]', err?.message);
+    return res.status(500).json({ error: err?.message ?? 'Failed to fetch Notion children' });
   }
 });
 
