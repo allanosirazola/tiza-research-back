@@ -77,11 +77,22 @@ async function fetchBlockChildren(blockId: string, depth: number): Promise<Notio
   let cursor: string | undefined;
 
   do {
-    const response = await notion.blocks.children.list({
-      block_id: blockId,
-      start_cursor: cursor,
-      page_size: 100,
-    });
+    let response;
+    try {
+      response = await notion.blocks.children.list({
+        block_id: blockId,
+        start_cursor: cursor,
+        page_size: 100,
+      });
+    } catch (err: any) {
+      // A nested block (synced block, unshared sub-page/database, etc.) may not be
+      // reachable by the integration. Skip it instead of failing the whole page.
+      if (err?.code === 'object_not_found' || err?.code === 'validation_error') {
+        console.warn(`[notion] skipping inaccessible block ${blockId}: ${err.code}`);
+        break;
+      }
+      throw err;
+    }
 
     for (const block of response.results) {
       if (isFullBlock(block)) {
