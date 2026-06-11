@@ -95,6 +95,7 @@ export interface PortfolioPosition {
   has_model?: boolean;      // whether the model has been parsed
   ytd_return?: number;      // YTD return %
   ytd_contribution?: number; // YTD contribution in pp
+  jan_price?: number;       // price at Jan 1 of current year (from price_snapshots)
   pnl_value?: number;       // position W/L incl. dividends, from the sheet (USD)
   pnl_pct?: number;         // position W/L %, from the sheet
   dividends?: number;       // dividends received, from the sheet
@@ -260,6 +261,7 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
 
   for (const pos of positions) {
     const jan1Price = jan1PriceMap.get(pos.id);
+    if (jan1Price) pos.jan_price = jan1Price;
     if (jan1Price && pos.current_price && jan1Price > 0) {
       pos.ytd_return = ((pos.current_price - jan1Price) / jan1Price) * 100;
       pos.ytd_contribution = ((pos.position_size ?? 0) / 100) * (pos.ytd_return / 100) * 100;
